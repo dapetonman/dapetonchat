@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -6,6 +6,7 @@ export const messages = pgTable("messages", {
   id: serial("id").primaryKey(),
   username: text("username").notNull(),
   content: text("content").notNull(),
+  recipientId: text("recipient_id"), // null for public, username for private
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -22,6 +23,8 @@ export type MessagesListResponse = Message[];
 
 export const WS_EVENTS = {
   CHAT_MESSAGE: 'chat_message',
+  USER_LIST: 'user_list',
+  NOTIFICATION: 'notification',
 } as const;
 
 export interface WsMessage<T = unknown> {
