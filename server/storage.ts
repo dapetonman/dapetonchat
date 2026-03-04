@@ -1,13 +1,10 @@
 import { messages, type Message, type InsertMessage } from "@shared/schema";
 import { db } from "./db";
-import { or, eq, isNull, and, lt } from "drizzle-orm";
+import { or, eq, isNull, and } from "drizzle-orm";
 
 export interface IStorage {
   getMessages(username?: string): Promise<Message[]>;
   createMessage(message: InsertMessage): Promise<Message>;
-  updateMessageReactions(id: number, reactions: any): Promise<Message>;
-  deleteUserMessages(username: string): Promise<void>;
-  archiveOldMessages(before: Date): Promise<Message[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -27,21 +24,6 @@ export class DatabaseStorage implements IStorage {
   async createMessage(insertMessage: InsertMessage): Promise<Message> {
     const [message] = await db.insert(messages).values(insertMessage).returning();
     return message;
-  }
-
-  async updateMessageReactions(id: number, reactions: any): Promise<Message> {
-    const [message] = await db.update(messages).set({ reactions }).where(eq(messages.id, id)).returning();
-    return message;
-  }
-
-  async deleteUserMessages(username: string): Promise<void> {
-    await db.delete(messages).where(eq(messages.username, username));
-  }
-
-  async archiveOldMessages(before: Date): Promise<Message[]> {
-    const oldMessages = await db.select().from(messages).where(lt(messages.createdAt, before));
-    await db.delete(messages).where(lt(messages.createdAt, before));
-    return oldMessages;
   }
 }
 

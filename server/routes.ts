@@ -5,41 +5,20 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { WS_EVENTS, type WsMessage } from "@shared/schema";
-import fs from "fs/promises";
-import path from "path";
-import cron from "node-cron";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
-  const clients = new Map<WebSocket, { username: string }>();
-
-  // Archiving logic
-  cron.schedule('0 0 * * *', async () => {
-    // This runs at 12:00 AM every day
-    // For "EST", we'd usually adjust offset, but simple "daily" is often what's meant.
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const oldMessages = await storage.archiveOldMessages(new Date());
-    if (oldMessages.length > 0) {
-      const fileName = `archive_${new Date().toISOString().split('T')[0]}.json`;
-      const filePath = path.join(process.cwd(), 'archives', fileName);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, JSON.stringify(oldMessages, null, 2));
-      console.log(`Archived ${oldMessages.length} messages to ${fileName}`);
-    }
-  }, {
-    timezone: "America/New_York"
-  });
+  const clients = new Map<WebSocket, { username: string; color: string }>();
 
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'identify') {
-          clients.set(ws, { username: msg.username });
+          clients.set(ws, { username: msg.username, color: msg.color });
           broadcastUserList();
         }
       } catch (e) {}
@@ -65,18 +44,21 @@ export async function registerRoutes(
     });
   }
 
-  function broadcastMessage(message: any, type: string = WS_EVENTS.CHAT_MESSAGE) {
+  function broadcastMessage(message: any) {
     const payload: WsMessage<any> = {
-      type,
+      type: WS_EVENTS.CHAT_MESSAGE,
       payload: message,
     };
     const data = JSON.stringify(payload);
     
     clients.forEach((info, client) => {
       if (client.readyState === WebSocket.OPEN) {
+        // Send if public OR if involved in private message
         if (!message.recipientId || message.recipientId === info.username || message.username === info.username) {
           client.send(data);
-          if (type === WS_EVENTS.CHAT_MESSAGE && message.recipientId === info.username && message.username !== info.username) {
+          
+          // If it's a private message for someone else, send notification
+          if (message.recipientId === info.username && message.username !== info.username) {
             client.send(JSON.stringify({
               type: WS_EVENTS.NOTIFICATION,
               payload: { from: message.username, content: message.content }
@@ -108,32 +90,6 @@ export async function registerRoutes(
       }
       res.status(500).json({ message: "Internal server error" });
     }
-  });
-
-  app.post('/api/messages/:id/react', async (req, res) => {
-    const { id } = req.params;
-    const { emoji, username } = req.body;
-    const messages = await storage.getMessages(); // Simple for now
-    const msg = messages.find(m => m.id === Number(id));
-    if (!msg) return res.status(404).json({ message: "Not found" });
-    
-    const reactions: any = { ...(msg.reactions as object) };
-    if (!reactions[emoji]) reactions[emoji] = [];
-    if (reactions[emoji].includes(username)) {
-      reactions[emoji] = reactions[emoji].filter((u: string) => u !== username);
-    } else {
-      reactions[emoji].push(username);
-    }
-    
-    const updated = await storage.updateMessageReactions(Number(id), reactions);
-    broadcastMessage(updated, WS_EVENTS.MESSAGE_UPDATE);
-    res.json(updated);
-  });
-
-  app.post('/api/logout', async (req, res) => {
-    const { username } = req.body;
-    await storage.deleteUserMessages(username);
-    res.json({ success: true });
   });
 
   return httpServer;
