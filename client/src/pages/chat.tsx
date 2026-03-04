@@ -86,11 +86,9 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
     const trimmed = content.trim();
     if (!trimmed || isSending) return;
 
-    sendMessage(
-      { username, content: trimmed, recipientId: recipient, replyToId: replyTo?.id },
-      { onSuccess: () => { setContent(""); setReplyTo(null); } }
-    );
-  };
+    //sendMessage(
+      //{ username, content: trimmed, recipientId: recipient, replyToId: replyTo?.id },
+      //{ onSuccess: () => { setContent(""); setReplyTo(null); } }
 
   const handleLogout = async () => {
     await fetch('/api/logout', {
@@ -278,5 +276,3 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
         </div>
       </div>
     </div>
-  );
-}

@@ -7,8 +7,8 @@ export const messages = pgTable("messages", {
   username: text("username").notNull(),
   content: text("content").notNull(),
   recipientId: text("recipient_id"), // null for public, username for private
-  replyToId: integer("reply_to_id"),
-  reactions: jsonb("reactions").default({}).notNull(), // { emoji: [usernames] }
+  //replyToId: integer("reply_to_id"),
+  //reactions: jsonb("reactions").default({}).notNull(), // { emoji: [usernames] }
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
