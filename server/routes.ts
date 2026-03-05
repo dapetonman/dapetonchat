@@ -111,23 +111,27 @@ export async function registerRoutes(
   });
 
   app.post('/api/messages/:id/react', async (req, res) => {
-    const { id } = req.params;
-    const { emoji, username } = req.body;
-    const messages = await storage.getMessages(); // Simple for now
-    const msg = messages.find(m => m.id === Number(id));
-    if (!msg) return res.status(404).json({ message: "Not found" });
-    
-    const reactions: any = { ...(msg.reactions as object) };
-    if (!reactions[emoji]) reactions[emoji] = [];
-    if (reactions[emoji].includes(username)) {
-      reactions[emoji] = reactions[emoji].filter((u: string) => u !== username);
-    } else {
-      reactions[emoji].push(username);
+    try {
+      const { id } = req.params;
+      const { emoji, username } = req.body;
+      const msg = await storage.getMessage(Number(id));
+      if (!msg) return res.status(404).json({ message: "Not found" });
+      
+      const reactions: any = { ...(msg.reactions as object) || {} };
+      if (!reactions[emoji]) reactions[emoji] = [];
+      if (reactions[emoji].includes(username)) {
+        reactions[emoji] = reactions[emoji].filter((u: string) => u !== username);
+      } else {
+        reactions[emoji].push(username);
+      }
+      
+      const updated = await storage.updateMessageReactions(Number(id), reactions);
+      broadcastMessage(updated, WS_EVENTS.MESSAGE_UPDATE);
+      res.json(updated);
+    } catch (err) {
+      console.error('Reaction error:', err);
+      res.status(500).json({ message: "Internal server error" });
     }
-    
-    const updated = await storage.updateMessageReactions(Number(id), reactions);
-    broadcastMessage(updated, WS_EVENTS.MESSAGE_UPDATE);
-    res.json(updated);
   });
 
   app.post('/api/logout', async (req, res) => {

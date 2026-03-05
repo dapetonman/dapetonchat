@@ -33,7 +33,7 @@ export default function ChatPage() {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-zinc-950 px-4">
         <div className="max-w-md w-full bg-zinc-900 rounded-3xl p-8 shadow-2xl border border-zinc-800">
-          <h1 className="text-4xl font-black text-white mb-6 text-center tracking-tight" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive' }}>
+          <h1 className="text-4xl font-black text-white mb-6 text-center tracking-tight" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive', fontWeight: 'normal' }}>
             dapetonchat
           </h1>
           <form onSubmit={(e) => { e.preventDefault(); if (nameInput.trim()) setUsername(nameInput.trim()); }} className="space-y-4">
@@ -102,11 +102,22 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   };
 
   const handleReact = async (msgId: number, emoji: string) => {
-    await fetch(`/api/messages/${msgId}/react`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emoji, username })
-    });
+    try {
+      const response = await fetch(`/api/messages/${msgId}/react`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emoji, username })
+      });
+      if (!response.ok) {
+        throw new Error('Failed to react');
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Could not add reaction. Please try again.",
+        variant: "destructive"
+      });
+    }
   };
 
   // Group users for the sidebar: General vs DMs
@@ -154,7 +165,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-16 border-b flex items-center justify-between px-6 bg-card/50 backdrop-blur-md sticky top-0 z-10">
           <div className="flex items-center gap-4">
-            <h1 className="text-2xl font-black tracking-tight" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive' }}>
+            <h1 className="text-2xl font-black tracking-tight" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive', fontWeight: 'normal' }}>
               dapetonchat
             </h1>
             {recipient && (

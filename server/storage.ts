@@ -6,6 +6,7 @@ export interface IStorage {
   getMessages(username?: string): Promise<Message[]>;
   createMessage(message: InsertMessage): Promise<Message>;
   updateMessageReactions(id: number, reactions: any): Promise<Message>;
+  getMessage(id: number): Promise<Message | undefined>;
   deleteUserMessages(username: string): Promise<void>;
   archiveOldMessages(before: Date): Promise<Message[]>;
 }
@@ -31,6 +32,11 @@ export class DatabaseStorage implements IStorage {
 
   async updateMessageReactions(id: number, reactions: any): Promise<Message> {
     const [message] = await db.update(messages).set({ reactions }).where(eq(messages.id, id)).returning();
+    return message;
+  }
+
+  async getMessage(id: number): Promise<Message | undefined> {
+    const [message] = await db.select().from(messages).where(eq(messages.id, id));
     return message;
   }
 
