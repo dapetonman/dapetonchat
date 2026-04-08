@@ -1,23 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@shared/routes";
-import { type Message, type MessageInput, type WsMessage } from "@shared/schema";
+import type { Message } from "@shared/schema";
 
-export function useMessages(username: string) {
-  return useQuery({
-    queryKey: [api.messages.list.path, username],
+export function useMessages(chatId: string) {
+  return useQuery<Message[]>({
+    queryKey: ['/api/messages', chatId],
     queryFn: async () => {
-      const res = await fetch(`${api.messages.list.path}?username=${username}`);
+      const res = await fetch(`/api/messages?chatId=${encodeURIComponent(chatId)}`);
       if (!res.ok) throw new Error("Failed to fetch messages");
       return res.json();
     },
+    enabled: !!chatId,
   });
 }
 
 export function useSendMessage() {
   return useMutation({
-    mutationFn: async (data: any) => {
-      const res = await fetch(api.messages.create.path, {
+    mutationFn: async (data: { username: string; content: string; chatId: string; replyToId?: number | null }) => {
+      const res = await fetch('/api/messages', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -28,44 +28,64 @@ export function useSendMessage() {
   });
 }
 
-export function useChatWebSocket(username: string, color: string, onNotification: (n: any) => void) {
+export function useUsers() {
+  return useQuery<{ id: number; username: string }[]>({
+    queryKey: ['/api/users'],
+    queryFn: async () => {
+      const res = await fetch('/api/users');
+      if (!res.ok) throw new Error("Failed to fetch users");
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+}
+
+export function useChatWebSocket(username: string, activeChatId: string) {
   const queryClient = useQueryClient();
-  const [users, setUsers] = useState<{ username: string; color: string }[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
+    if (!username) return;
+
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
+
     let ws: WebSocket;
-    
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+
     const connect = () => {
       ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'identify', username, color }));
+        ws.send(JSON.stringify({ type: 'identify', username }));
       };
 
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'chat_message') {
-          queryClient.setQueryData<Message[]>([api.messages.list.path, username], (old) => {
-            if (!old) return [data.payload];
-            if (old.some(m => m.id === data.payload.id)) return old;
-            return [...old, data.payload];
-          });
-        } else if (data.type === 'user_list') {
-          setUsers(data.payload);
-        } else if (data.type === 'notification') {
-          onNotification(data.payload);
-        }
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'chat_message') {
+            const msg: Message = data.payload;
+            // Update the cache for this chatId
+            queryClient.setQueryData<Message[]>(['/api/messages', msg.chatId], (old) => {
+              if (!old) return [msg];
+              if (old.some(m => m.id === msg.id)) return old;
+              return [...old, msg];
+            });
+          }
+        } catch {}
       };
 
-      ws.onclose = () => setTimeout(connect, 3000);
+      ws.onclose = () => {
+        reconnectTimer = setTimeout(connect, 3000);
+      };
     };
 
     connect();
-    return () => ws?.close();
-  }, [username, color, queryClient]);
 
-  return { users };
+    return () => {
+      ws?.close();
+      clearTimeout(reconnectTimer);
+    };
+  }, [username, queryClient]);
 }

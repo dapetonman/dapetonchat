@@ -2,7 +2,6 @@ import type { Express } from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import { storage } from "./storage";
-import { api } from "@shared/routes";
 import { z } from "zod";
 import { WS_EVENTS, type WsMessage } from "@shared/schema";
 import fs from "fs/promises";
@@ -16,12 +15,8 @@ export async function registerRoutes(
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
   const clients = new Map<WebSocket, { username: string }>();
 
-  // Archiving logic
+  // Daily archive at midnight EST
   cron.schedule('0 0 * * *', async () => {
-    // This runs at 12:00 AM every day
-    // For "EST", we'd usually adjust offset, but simple "daily" is often what's meant.
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
     const oldMessages = await storage.archiveOldMessages(new Date());
     if (oldMessages.length > 0) {
       const fileName = `archive_${new Date().toISOString().split('T')[0]}.json`;
@@ -30,9 +25,7 @@ export async function registerRoutes(
       await fs.writeFile(filePath, JSON.stringify(oldMessages, null, 2));
       console.log(`Archived ${oldMessages.length} messages to ${fileName}`);
     }
-  }, {
-    timezone: "America/New_York"
-  });
+  }, { timezone: "America/New_York" });
 
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
@@ -40,104 +33,114 @@ export async function registerRoutes(
         const msg = JSON.parse(data.toString());
         if (msg.type === 'identify') {
           clients.set(ws, { username: msg.username });
-          broadcastUserList();
         }
       } catch (e) {}
     });
-    
+
     ws.on('close', () => {
       clients.delete(ws);
-      broadcastUserList();
     });
   });
 
-  function broadcastUserList() {
-    const userList = Array.from(clients.values());
+  function broadcastToChat(message: any, chatId: string) {
     const payload: WsMessage<any> = {
-      type: WS_EVENTS.USER_LIST,
-      payload: userList,
+      type: WS_EVENTS.CHAT_MESSAGE,
+      payload: message,
     };
     const data = JSON.stringify(payload);
-    clients.forEach((_, client) => {
-      if (client.readyState === WebSocket.OPEN) {
+
+    clients.forEach((info, client) => {
+      if (client.readyState !== WebSocket.OPEN) return;
+
+      // General chat: send to everyone
+      if (chatId === 'general') {
+        client.send(data);
+        return;
+      }
+
+      // DM chat: only send to the two participants
+      const participants = chatId.split('_');
+      if (participants.includes(info.username)) {
         client.send(data);
       }
     });
   }
 
-  function broadcastMessage(message: any, type: string = WS_EVENTS.CHAT_MESSAGE) {
-    const payload: WsMessage<any> = {
-      type,
-      payload: message,
-    };
-    const data = JSON.stringify(payload);
-    
-    clients.forEach((info, client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        if (!message.recipientId || message.recipientId === info.username || message.username === info.username) {
-          client.send(data);
-          if (type === WS_EVENTS.CHAT_MESSAGE && message.recipientId === info.username && message.username !== info.username) {
-            client.send(JSON.stringify({
-              type: WS_EVENTS.NOTIFICATION,
-              payload: { from: message.username, content: message.content }
-            }));
-          }
-        }
+  // Auth routes
+  app.post('/api/auth/register', async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      if (!username || !password) {
+        return res.status(400).json({ message: "Username and password required" });
       }
-    });
-  }
-
-  app.get(api.messages.list.path, async (req, res) => {
-    const username = req.query.username as string;
-    const messages = await storage.getMessages(username);
-    res.json(messages);
+      const existing = await storage.getUserByUsername(username);
+      if (existing) {
+        return res.status(409).json({ message: "Username already taken" });
+      }
+      const user = await storage.createUser({ username, password });
+      res.status(201).json({ id: user.id, username: user.username });
+    } catch (err) {
+      console.error('Register error:', err);
+      res.status(500).json({ message: "Internal server error" });
+    }
   });
 
-  app.post(api.messages.create.path, async (req, res) => {
+  app.post('/api/auth/login', async (req, res) => {
     try {
-      const input = api.messages.create.input.parse(req.body);
-      const message = await storage.createMessage(input);
-      broadcastMessage(message);
+      const { username, password } = req.body;
+      if (!username || !password) {
+        return res.status(400).json({ message: "Username and password required" });
+      }
+      const user = await storage.getUserByUsername(username);
+      if (!user || user.password !== password) {
+        return res.status(401).json({ message: "Invalid username or password" });
+      }
+      res.json({ id: user.id, username: user.username });
+    } catch (err) {
+      console.error('Login error:', err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Users list (all registered accounts)
+  app.get('/api/users', async (req, res) => {
+    try {
+      const allUsers = await storage.getAllUsers();
+      res.json(allUsers.map(u => ({ id: u.id, username: u.username })));
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Messages routes
+  app.get('/api/messages', async (req, res) => {
+    try {
+      const chatId = (req.query.chatId as string) || 'general';
+      const msgs = await storage.getMessages(chatId);
+      res.json(msgs);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post('/api/messages', async (req, res) => {
+    try {
+      const { username, content, chatId, replyToId } = req.body;
+      if (!username || !content || !chatId) {
+        return res.status(400).json({ message: "username, content, and chatId are required" });
+      }
+      const message = await storage.createMessage({
+        username,
+        content,
+        chatId,
+        replyToId: replyToId ?? null,
+      });
+      broadcastToChat(message, chatId);
       res.status(201).json(message);
     } catch (err) {
-      if (err instanceof z.ZodError) {
-        return res.status(400).json({
-          message: err.errors[0].message,
-          field: err.errors[0].path.join('.'),
-        });
-      }
+      console.error('Send message error:', err);
       res.status(500).json({ message: "Internal server error" });
     }
-  });
-
-  app.post('/api/messages/:id/react', async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { emoji, username } = req.body;
-      const msg = await storage.getMessage(Number(id));
-      if (!msg) return res.status(404).json({ message: "Not found" });
-      
-      const reactions: any = { ...(msg.reactions as object) || {} };
-      if (!reactions[emoji]) reactions[emoji] = [];
-      if (reactions[emoji].includes(username)) {
-        reactions[emoji] = reactions[emoji].filter((u: string) => u !== username);
-      } else {
-        reactions[emoji].push(username);
-      }
-      
-      const updated = await storage.updateMessageReactions(Number(id), reactions);
-      broadcastMessage(updated, WS_EVENTS.MESSAGE_UPDATE);
-      res.json(updated);
-    } catch (err) {
-      console.error('Reaction error:', err);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  });
-
-  app.post('/api/logout', async (req, res) => {
-    const { username } = req.body;
-    await storage.deleteUserMessages(username);
-    res.json({ success: true });
   });
 
   return httpServer;

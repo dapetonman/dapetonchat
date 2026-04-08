@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { insertMessageSchema, messages } from './schema';
+import { insertMessageSchema, insertUserSchema } from './schema';
 
 export const errorSchemas = {
   validation: z.object({
@@ -12,47 +12,33 @@ export const errorSchemas = {
 };
 
 export const api = {
+  auth: {
+    register: {
+      method: 'POST' as const,
+      path: '/api/auth/register' as const,
+      input: insertUserSchema,
+    },
+    login: {
+      method: 'POST' as const,
+      path: '/api/auth/login' as const,
+      input: z.object({ username: z.string(), password: z.string() }),
+    },
+  },
+  users: {
+    list: {
+      method: 'GET' as const,
+      path: '/api/users' as const,
+    },
+  },
   messages: {
     list: {
       method: 'GET' as const,
       path: '/api/messages' as const,
-      responses: {
-        200: z.array(z.custom<typeof messages.$inferSelect>()),
-      },
     },
     create: {
       method: 'POST' as const,
       path: '/api/messages' as const,
       input: insertMessageSchema,
-      responses: {
-        201: z.custom<typeof messages.$inferSelect>(),
-        400: errorSchemas.validation,
-      },
     },
   },
 };
-
-export function buildUrl(path: string, params?: Record<string, string | number>): string {
-  let url = path;
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
-      if (url.includes(`:${key}`)) {
-        url = url.replace(`:${key}`, String(value));
-      }
-    });
-  }
-  return url;
-}
-
-export const ws = {
-  send: {
-    message: z.object({ content: z.string(), username: z.string() }),
-  },
-  receive: {
-    message: z.custom<typeof messages.$inferSelect>(),
-  },
-};
-
-export type MessageInput = z.infer<typeof api.messages.create.input>;
-export type MessageResponse = z.infer<typeof api.messages.create.responses[201]>;
-export type MessagesListResponse = z.infer<typeof api.messages.list.responses[200]>;
