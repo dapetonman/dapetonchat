@@ -12,9 +12,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(data.toString());
-        if (msg.type === "identify") {
-          clients.set(ws, { username: msg.username });
-        }
+        if (msg.type === "identify") clients.set(ws, { username: msg.username });
       } catch {}
     });
 
@@ -29,24 +27,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     clients.forEach((info, client) => {
       if (client.readyState !== WebSocket.OPEN) return;
-      if (chatId === "general") {
-        client.send(data);
-        return;
-      }
-      if (chatId.split("_").includes(info.username)) {
-        client.send(data);
-      }
+      if (chatId === "general" || chatId.split("_").includes(info.username)) client.send(data);
     });
   }
 
   app.post("/api/auth/register", async (req, res) => {
     try {
-      const { username, password } = req.body;
+      const { username, password } = req.body ?? {};
       if (!username || !password) return res.status(400).json({ message: "Username and password required" });
       const existing = await storage.getUserByUsername(username);
       if (existing) return res.status(409).json({ message: "Username already taken" });
       const user = await storage.createUser({ username, password });
-      res.status(201).json({ id: user.id, username: user.username });
+      res.status(201).json(user);
     } catch (err) {
       console.error("Register error:", err);
       res.status(500).json({ message: "Internal server error" });
@@ -55,11 +47,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/auth/login", async (req, res) => {
     try {
-      const { username, password } = req.body;
+      const { username, password } = req.body ?? {};
       if (!username || !password) return res.status(400).json({ message: "Username and password required" });
       const user = await storage.getUserByUsername(username);
-      if (!user || (user as any).password !== password) return res.status(401).json({ message: "Invalid username or password" });
-      res.json({ id: user.id, username: user.username });
+      const stored = (user as any) ?? undefined;
+      if (!stored || stored.password !== password) return res.status(401).json({ message: "Invalid username or password" });
+      res.json(user);
     } catch (err) {
       console.error("Login error:", err);
       res.status(500).json({ message: "Internal server error" });
@@ -68,9 +61,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get("/api/users", async (_req, res) => {
     try {
-      const allUsers = await storage.getAllUsers();
-      res.json(allUsers);
+      res.json(await storage.getAllUsers());
     } catch (err) {
+      console.error("Users error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -80,13 +73,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const chatId = (req.query.chatId as string) || "general";
       res.json(await storage.getMessages(chatId));
     } catch (err) {
+      console.error("Messages error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   });
 
   app.post("/api/messages", async (req, res) => {
     try {
-      const { username, content, chatId, replyToId } = req.body;
+      const { username, content, chatId, replyToId } = req.body ?? {};
       if (!username || !content || !chatId) return res.status(400).json({ message: "username, content, and chatId are required" });
       const message = await storage.createMessage({ username, content, chatId, replyToId: replyToId ?? null });
       broadcastToChat(message, chatId);
