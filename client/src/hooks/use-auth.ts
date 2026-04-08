@@ -20,34 +20,22 @@ export function useAuth() {
   }, []);
 
   const login = async (username: string, password: string): Promise<string | null> => {
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      return err.message || 'Login failed';
-    }
-    const data = await res.json();
-    localStorage.setItem("chat_session", JSON.stringify(data));
-    setUser(data);
+    const accounts = JSON.parse(localStorage.getItem("chat_accounts") || "[]") as Array<{ username: string; password: string; id: number }>;
+    const account = accounts.find((item) => item.username === username && item.password === password);
+    if (!account) return "Invalid username or password";
+    const session = { id: account.id, username: account.username };
+    localStorage.setItem("chat_session", JSON.stringify(session));
+    setUser(session);
     return null;
   };
 
   const register = async (username: string, password: string): Promise<string | null> => {
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      return err.message || 'Registration failed';
-    }
-    const data = await res.json();
-    localStorage.setItem("chat_session", JSON.stringify(data));
-    setUser(data);
+    const accounts = JSON.parse(localStorage.getItem("chat_accounts") || "[]") as Array<{ username: string; password: string; id: number }>;
+    if (accounts.some((item) => item.username === username)) return "Username already taken";
+    const session = { id: accounts.length + 1, username };
+    localStorage.setItem("chat_accounts", JSON.stringify([...accounts, { ...session, password }]));
+    localStorage.setItem("chat_session", JSON.stringify(session));
+    setUser(session);
     return null;
   };
 
