@@ -10,7 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useToast } from "@/hooks/use-toast";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
-const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+const EMOJIS = ["this", "doesnt", "work", "yet", "dont", "use"];
 
 export default function ChatPage() {
   const { username, setUsername, clearUsername, isReady } = useUsername();
