@@ -49,9 +49,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { username, password } = req.body ?? {};
       if (!username || !password) return res.status(400).json({ message: "Username and password required" });
-      const user = await storage.getUserByUsername(username);
-      const stored = (user as any) ?? undefined;
+      const stored = await storage.getUserByUsername(username);
       if (!stored || stored.password !== password) return res.status(401).json({ message: "Invalid username or password" });
+      const { password: _password, ...user } = stored;
       res.json(user);
     } catch (err) {
       console.error("Login error:", err);

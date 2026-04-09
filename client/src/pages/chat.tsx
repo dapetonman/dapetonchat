@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
-import { getDmChatId, MAIN_CHANNELS } from "@shared/schema";
+import { CHANNEL_MESSAGE_IDS, getDmChatId, MAIN_CHANNELS } from "@shared/schema";
 import type { Message } from "@shared/schema";
 
 function AuthScreen({ onAuth }: { onAuth: () => void }) {
@@ -113,8 +113,19 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   const [activeChatLabel, setActiveChatLabel] = useState<string>('general');
   const [isPrivate, setIsPrivate] = useState(false);
   useChatWebSocket(username);
-  const openDm = (otherUser: string) => { setActiveChatId(getDmChatId(username, otherUser)); setActiveChatLabel(otherUser); setIsPrivate(true); };
-  const openGeneral = (channel: string) => { setActiveChatId(channel); setActiveChatLabel(channel); setIsPrivate(false); };
+
+  const openDm = (otherUser: string) => {
+    setActiveChatId(getDmChatId(username, otherUser));
+    setActiveChatLabel(otherUser);
+    setIsPrivate(true);
+  };
+
+  const openGeneral = (channel: string) => {
+    setActiveChatId(CHANNEL_MESSAGE_IDS[channel as keyof typeof CHANNEL_MESSAGE_IDS] ?? channel);
+    setActiveChatLabel(channel);
+    setIsPrivate(false);
+  };
+
   const otherUsers = allUsers;
 
   return (

@@ -8,6 +8,7 @@ const messagesFile = path.join(dataDir, "messages.json");
 
 let usersLoaded = false;
 let messagesLoaded = false;
+let nextUserId = 1;
 let nextMessageId = 1;
 
 const users = new Map<string, User & { password: string }>();
@@ -24,7 +25,10 @@ async function loadUsers() {
     const raw = await fs.readFile(usersFile, "utf8");
     const list = JSON.parse(raw) as Array<User & { password: string }>;
     users.clear();
-    for (const user of list) users.set(user.username, { ...user, createdAt: new Date(user.createdAt) });
+    for (const user of list) {
+      users.set(user.username, { ...user, createdAt: new Date(user.createdAt) });
+      nextUserId = Math.max(nextUserId, user.id + 1);
+    }
   } catch {}
 }
 
@@ -53,7 +57,7 @@ async function saveMessages() {
 }
 
 export interface IStorage {
-  getUserByUsername(username: string): Promise<User | undefined>;
+  getUserByUsername(username: string): Promise<(User & { password: string }) | undefined>;
   createUser(user: InsertUser): Promise<User>;
   getAllUsers(): Promise<User[]>;
   getMessages(chatId: string): Promise<Message[]>;
@@ -63,18 +67,15 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
-  async getUserByUsername(username: string): Promise<User | undefined> {
+  async getUserByUsername(username: string): Promise<(User & { password: string }) | undefined> {
     await loadUsers();
-    const user = users.get(username);
-    if (!user) return undefined;
-    const { password, ...publicUser } = user;
-    return publicUser;
+    return users.get(username);
   }
 
   async createUser(user: InsertUser): Promise<User> {
     await loadUsers();
     const created = {
-      id: users.size + 1,
+      id: nextUserId++,
       username: user.username,
       password: user.password,
       createdAt: new Date(),
