@@ -1,1 +1,18 @@
-[]
+[
+  {
+    "id": 1,
+    "username": "dapetonman",
+    "content": "jhbj\\",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-09T18:35:38.640Z"
+  },
+  {
+    "id": 2,
+    "username": "dapetonman",
+    "content": "m",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-09T18:35:40.006Z"
+  }
+]

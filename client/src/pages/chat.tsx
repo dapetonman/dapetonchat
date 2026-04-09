@@ -11,6 +11,7 @@ import { CHANNEL_MESSAGE_IDS, getDmChatId, MAIN_CHANNELS } from "@shared/schema"
 import type { Message } from "@shared/schema";
 
 const ADMIN_USERNAME = "dapetonman";
+const APP_TITLE = "dapetonchat";
 
 function AuthScreen({ onAuth }: { onAuth: () => void }) {
   const { login, register } = useAuth();
@@ -84,7 +85,7 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
               const replyTarget = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
               return (
                 <div key={msg.id} data-testid={`message-${msg.id}`} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} ${showUsername ? 'mt-4' : 'mt-0.5'}`}>
-                  {showUsername && <div className={`flex items-baseline gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}><span className={`text-xs font-bold ${isMe && msg.username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{isMe ? 'You' : msg.username}</span><span className="text-[10px] text-muted-foreground">{format(new Date(msg.createdAt), 'MMM d, h:mm a')}</span></div>}
+                  {showUsername && <div className={`flex items-baseline gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}><span className={`text-xs font-bold ${msg.username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{isMe ? 'You' : msg.username}</span><span className="text-[10px] text-muted-foreground">{format(new Date(msg.createdAt), 'MMM d, h:mm a')}</span></div>}
                   {replyTarget && <div className={`mb-1 text-xs text-muted-foreground bg-muted/40 px-2 py-1 rounded-lg border-l-2 border-primary/30 flex items-center gap-1 max-w-[75%]`}><Reply className="w-3 h-3 shrink-0" /><span className="truncate"><span className="font-medium">{replyTarget.username}:</span> {replyTarget.content}</span></div>}
                   <div className={`relative group max-w-[75%] px-4 py-2 rounded-2xl text-sm break-words cursor-pointer select-none transition-all ${isMe ? 'bg-primary text-primary-foreground rounded-tr-sm' : 'bg-muted text-foreground rounded-tl-sm'} hover:opacity-90 active:scale-[0.99]`} onClick={(e) => { if (e.shiftKey) setReplyTo(msg); }}>
                     {msg.content}
@@ -118,6 +119,30 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   const [deleting, setDeleting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   useChatWebSocket(username);
+
+  useEffect(() => {
+    const updateTitle = () => {
+      document.title = document.hidden ? 'new message' : APP_TITLE;
+    };
+    updateTitle();
+    document.addEventListener('visibilitychange', updateTitle);
+    window.addEventListener('focus', updateTitle);
+    window.addEventListener('blur', updateTitle);
+    return () => {
+      document.removeEventListener('visibilitychange', updateTitle);
+      window.removeEventListener('focus', updateTitle);
+      window.removeEventListener('blur', updateTitle);
+      document.title = APP_TITLE;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onMessage = () => {
+      if (document.hidden) document.title = 'new message';
+    };
+    window.addEventListener('chat-new-message', onMessage as EventListener);
+    return () => window.removeEventListener('chat-new-message', onMessage as EventListener);
+  }, []);
 
   const openDm = (otherUser: string) => {
     setActiveChatId(getDmChatId(username, otherUser));
