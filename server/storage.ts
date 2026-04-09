@@ -63,6 +63,7 @@ export interface IStorage {
   getMessages(chatId: string): Promise<Message[]>;
   getMessage(id: number): Promise<Message | undefined>;
   createMessage(message: InsertMessage): Promise<Message>;
+  deleteAllMessages(): Promise<void>;
   archiveOldMessages(before: Date): Promise<Message[]>;
 }
 
@@ -116,6 +117,13 @@ export class DatabaseStorage implements IStorage {
     messages.set(message.id, message);
     await saveMessages();
     return message;
+  }
+
+  async deleteAllMessages(): Promise<void> {
+    await loadMessages();
+    messages.clear();
+    nextMessageId = 1;
+    await saveMessages();
   }
 
   async archiveOldMessages(before: Date): Promise<Message[]> {

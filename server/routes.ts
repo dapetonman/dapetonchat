@@ -91,5 +91,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.delete("/api/messages", async (req, res) => {
+    try {
+      const { username } = req.body ?? {};
+      if (username !== "dapetonman") return res.status(403).json({ message: "Forbidden" });
+      await storage.deleteAllMessages();
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Delete messages error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   return httpServer;
 }
