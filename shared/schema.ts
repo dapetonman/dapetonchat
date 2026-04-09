@@ -11,6 +11,8 @@ export type Message = {
 };
 export type InsertMessage = { username: string; content: string; chatId: string; replyToId?: number | null };
 
+export const MAIN_CHANNELS = ["general", "memes", "school work"] as const;
+
 export const WS_EVENTS = {
   CHAT_MESSAGE: "chat_message",
   USER_LIST: "user_list",

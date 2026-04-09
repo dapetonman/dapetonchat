@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect } from "react";
 import { format } from "date-fns";
-import { Send, MessageSquare, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock } from "lucide-react";
+import { Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock } from "lucide-react";
 import { useMessages, useSendMessage, useUsers, useChatWebSocket } from "@/hooks/use-chat";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
-import { getDmChatId } from "@shared/schema";
+import { getDmChatId, MAIN_CHANNELS } from "@shared/schema";
 import type { Message } from "@shared/schema";
 
 function AuthScreen({ onAuth }: { onAuth: () => void }) {
@@ -112,16 +112,16 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   const [activeChatId, setActiveChatId] = useState<string>('general');
   const [activeChatLabel, setActiveChatLabel] = useState<string>('general');
   const [isPrivate, setIsPrivate] = useState(false);
-  useChatWebSocket(username, activeChatId);
+  useChatWebSocket(username);
   const openDm = (otherUser: string) => { setActiveChatId(getDmChatId(username, otherUser)); setActiveChatLabel(otherUser); setIsPrivate(true); };
-  const openGeneral = () => { setActiveChatId('general'); setActiveChatLabel('general'); setIsPrivate(false); };
+  const openGeneral = (channel: string) => { setActiveChatId(channel); setActiveChatLabel(channel); setIsPrivate(false); };
   const otherUsers = allUsers;
 
   return (
     <div className="h-screen w-full bg-background flex font-sans overflow-hidden">
       <div className="w-60 flex-none border-r border-border bg-card flex flex-col">
         <div className="h-14 flex items-center px-4 border-b border-border shrink-0"><h1 className="text-xl text-foreground" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive', fontWeight: 'normal' }}>dapetonchat</h1></div>
-        <ScrollArea className="flex-1"><div className="p-3 space-y-5"><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1">Channels</p><button data-testid="sidebar-general" onClick={openGeneral} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === 'general' ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><Hash className="w-4 h-4 shrink-0" />general</button></div><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1 flex items-center gap-1"><Users className="w-3 h-3" /> Users</p><div className="space-y-0.5">{otherUsers.map(u => { const chatId = getDmChatId(username, u.username); return <button key={u.id} data-testid={`sidebar-user-${u.id}`} onClick={() => openDm(u.username)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === chatId ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase shrink-0">{u.username[0]}</div><span className="truncate">{u.username}</span></button>;})}</div></div></div></ScrollArea>
+        <ScrollArea className="flex-1"><div className="p-3 space-y-5"><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1">Channels</p><div className="space-y-1">{MAIN_CHANNELS.map((channel) => <button key={channel} data-testid={`sidebar-channel-${channel}`} onClick={() => openGeneral(channel)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === channel ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><Hash className="w-4 h-4 shrink-0" />{channel}</button>)}</div></div><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1 flex items-center gap-1"><Users className="w-3 h-3" /> Users</p><div className="space-y-0.5">{otherUsers.map(u => { const chatId = getDmChatId(username, u.username); return <button key={u.id} data-testid={`sidebar-user-${u.id}`} onClick={() => openDm(u.username)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === chatId ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase shrink-0">{u.username[0]}</div><span className="truncate">{u.username}</span></button>;})}</div></div></div></ScrollArea>
         <div className="p-3 border-t border-border shrink-0"><div className="flex items-center gap-2"><div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold uppercase shrink-0">{username[0]}</div><span className="text-sm font-medium flex-1 truncate">{username}</span><button data-testid="button-theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">{theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}</button><button data-testid="button-logout" onClick={onLogout} className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"><LogOut className="w-4 h-4" /></button></div></div>
       </div>
       <div className="flex-1 flex flex-col min-w-0"><ChatWindow key={activeChatId} chatId={activeChatId} username={username} chatLabel={activeChatLabel} isPrivate={isPrivate} /></div>
