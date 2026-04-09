@@ -4,6 +4,8 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { WS_EVENTS, type WsMessage } from "@shared/schema";
 
+const ADMIN_USERNAME = "dapetonman";
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
   const clients = new Map<WebSocket, { username: string }>();
@@ -28,6 +30,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     clients.forEach((info, client) => {
       if (client.readyState !== WebSocket.OPEN) return;
       if (chatId === "general" || chatId.split("_").includes(info.username)) client.send(data);
+    });
+  }
+
+  function broadcastReload() {
+    const data = JSON.stringify({ type: "reload" });
+    clients.forEach((_, client) => {
+      if (client.readyState === WebSocket.OPEN) client.send(data);
     });
   }
 
@@ -94,8 +103,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/messages", async (req, res) => {
     try {
       const { username } = req.body ?? {};
-      if (username !== "dapetonman") return res.status(403).json({ message: "Forbidden" });
+      if (username !== ADMIN_USERNAME) return res.status(403).json({ message: "Forbidden" });
       await storage.deleteAllMessages();
+      broadcastReload();
       res.json({ ok: true });
     } catch (err) {
       console.error("Delete messages error:", err);
@@ -106,8 +116,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/users", async (req, res) => {
     try {
       const { username } = req.body ?? {};
-      if (username !== "dapetonman") return res.status(403).json({ message: "Forbidden" });
+      if (username !== ADMIN_USERNAME) return res.status(403).json({ message: "Forbidden" });
       await storage.deleteAllUsers();
+      broadcastReload();
       res.json({ ok: true });
     } catch (err) {
       console.error("Delete users error:", err);

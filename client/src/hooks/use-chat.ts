@@ -71,6 +71,9 @@ export function useChatWebSocket(username: string) {
               return [...old, msg];
             });
           }
+          if (data.type === "reload") {
+            window.location.reload();
+          }
         } catch {}
       };
 

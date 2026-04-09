@@ -10,6 +10,8 @@ import { useToast } from "@/hooks/use-toast";
 import { CHANNEL_MESSAGE_IDS, getDmChatId, MAIN_CHANNELS } from "@shared/schema";
 import type { Message } from "@shared/schema";
 
+const ADMIN_USERNAME = "dapetonman";
+
 function AuthScreen({ onAuth }: { onAuth: () => void }) {
   const { login, register } = useAuth();
   const { toast } = useToast();
@@ -82,7 +84,7 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
               const replyTarget = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
               return (
                 <div key={msg.id} data-testid={`message-${msg.id}`} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} ${showUsername ? 'mt-4' : 'mt-0.5'}`}>
-                  {showUsername && <div className={`flex items-baseline gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}><span className="text-xs font-bold">{isMe ? 'You' : msg.username}</span><span className="text-[10px] text-muted-foreground">{format(new Date(msg.createdAt), 'MMM d, h:mm a')}</span></div>}
+                  {showUsername && <div className={`flex items-baseline gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}><span className={`text-xs font-bold ${isMe && msg.username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{isMe ? 'You' : msg.username}</span><span className="text-[10px] text-muted-foreground">{format(new Date(msg.createdAt), 'MMM d, h:mm a')}</span></div>}
                   {replyTarget && <div className={`mb-1 text-xs text-muted-foreground bg-muted/40 px-2 py-1 rounded-lg border-l-2 border-primary/30 flex items-center gap-1 max-w-[75%]`}><Reply className="w-3 h-3 shrink-0" /><span className="truncate"><span className="font-medium">{replyTarget.username}:</span> {replyTarget.content}</span></div>}
                   <div className={`relative group max-w-[75%] px-4 py-2 rounded-2xl text-sm break-words cursor-pointer select-none transition-all ${isMe ? 'bg-primary text-primary-foreground rounded-tr-sm' : 'bg-muted text-foreground rounded-tl-sm'} hover:opacity-90 active:scale-[0.99]`} onClick={(e) => { if (e.shiftKey) setReplyTo(msg); }}>
                     {msg.content}
@@ -130,7 +132,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   };
 
   const handleDeleteAllMessages = async () => {
-    if (username !== 'dapetonman' || deleting) return;
+    if (username !== ADMIN_USERNAME || deleting) return;
     setDeleting(true);
     const res = await fetch('/api/messages', {
       method: 'DELETE',
@@ -143,11 +145,10 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
       toast({ title: 'Error', description: 'Failed to delete messages', variant: 'destructive' });
       return;
     }
-    window.location.reload();
   };
 
   const handleDeleteAllUsers = async () => {
-    if (username !== 'dapetonman' || deleting) return;
+    if (username !== ADMIN_USERNAME || deleting) return;
     setDeleting(true);
     const res = await fetch('/api/users', {
       method: 'DELETE',
@@ -160,18 +161,17 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
       toast({ title: 'Error', description: 'Failed to delete users', variant: 'destructive' });
       return;
     }
-    window.location.reload();
   };
 
   return (
     <div className="h-screen w-full bg-background flex font-sans overflow-hidden">
       <div className="w-60 flex-none border-r border-border bg-card flex flex-col">
         <div className="h-14 flex items-center px-4 border-b border-border shrink-0"><h1 className="text-xl text-foreground" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive', fontWeight: 'normal' }}>dapetonchat</h1></div>
-        <ScrollArea className="flex-1"><div className="p-3 space-y-5"><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1">Channels</p><div className="space-y-1">{MAIN_CHANNELS.map((channel) => <button key={channel} data-testid={`sidebar-channel-${channel}`} onClick={() => openGeneral(channel)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === channel ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><Hash className="w-4 h-4 shrink-0" />{channel}</button>)}</div></div><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1 flex items-center gap-1"><Users className="w-3 h-3" /> Users</p><div className="space-y-0.5">{allUsers.map(u => { const chatId = getDmChatId(username, u.username); return <button key={u.id} data-testid={`sidebar-user-${u.id}`} onClick={() => openDm(u.username)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === chatId ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase shrink-0">{u.username[0]}</div><span className="truncate">{u.username}</span></button>;})}</div></div></div></ScrollArea>
-        <div className="p-3 border-t border-border shrink-0"><div className="flex items-center gap-2"><div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold uppercase shrink-0">{username[0]}</div><span className="text-sm font-medium flex-1 truncate">{username}</span><button data-testid="button-theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">{theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}</button><button data-testid="button-logout" onClick={onLogout} className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"><LogOut className="w-4 h-4" /></button></div></div>
+        <ScrollArea className="flex-1"><div className="p-3 space-y-5"><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1">Channels</p><div className="space-y-1">{MAIN_CHANNELS.map((channel) => <button key={channel} data-testid={`sidebar-channel-${channel}`} onClick={() => openGeneral(channel)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === channel ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><Hash className="w-4 h-4 shrink-0" />{channel}</button>)}</div></div><div><p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1 flex items-center gap-1"><Users className="w-3 h-3" /> Users</p><div className="space-y-0.5">{allUsers.map(u => { const chatId = getDmChatId(username, u.username); return <button key={u.id} data-testid={`sidebar-user-${u.id}`} onClick={() => openDm(u.username)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeChatId === chatId ? 'bg-accent text-accent-foreground font-medium' : 'hover:bg-accent/50 text-muted-foreground'}`}><div className={`w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase shrink-0 ${u.username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{u.username[0]}</div><span className={`truncate ${u.username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{u.username}</span></button>;})}</div></div></div></ScrollArea>
+        <div className="p-3 border-t border-border shrink-0"><div className="flex items-center gap-2"><div className={`w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold uppercase shrink-0 ${username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{username[0]}</div><span className={`text-sm font-medium flex-1 truncate ${username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{username}</span><button data-testid="button-theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">{theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}</button><button data-testid="button-logout" onClick={onLogout} className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"><LogOut className="w-4 h-4" /></button></div></div>
       </div>
       <div className="flex-1 flex flex-col min-w-0"><ChatWindow key={activeChatId} chatId={activeChatId} username={username} chatLabel={activeChatLabel} isPrivate={isPrivate} /></div>
-      {username === 'dapetonman' && (
+      {username === ADMIN_USERNAME && (
         <div className="fixed bottom-4 right-4 z-50">
           <button data-testid="button-admin-menu" onClick={() => setMenuOpen((v) => !v)} className="inline-flex items-center gap-2 rounded-full bg-destructive px-4 py-3 text-sm font-semibold text-destructive-foreground shadow-lg hover:opacity-90">
             <MoreVertical className="h-4 w-4" /> Admin menu
