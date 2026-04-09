@@ -2,25 +2,9 @@
   {
     "id": 1,
     "username": "dapetonman",
-    "content": "jhbj\\",
+    "content": "hello",
     "chatId": "general",
     "replyToId": null,
-    "createdAt": "2026-04-09T18:35:38.640Z"
-  },
-  {
-    "id": 2,
-    "username": "dapetonman",
-    "content": "m",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-09T18:35:40.006Z"
-  },
-  {
-    "id": 3,
-    "username": "dapetonman",
-    "content": "b",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-09T18:40:01.188Z"
+    "createdAt": "2026-04-09T18:44:52.082Z"
   }
 ]
