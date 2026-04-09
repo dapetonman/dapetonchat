@@ -64,6 +64,7 @@ export interface IStorage {
   getMessage(id: number): Promise<Message | undefined>;
   createMessage(message: InsertMessage): Promise<Message>;
   deleteAllMessages(): Promise<void>;
+  deleteAllUsers(): Promise<void>;
   archiveOldMessages(before: Date): Promise<Message[]>;
 }
 
@@ -124,6 +125,13 @@ export class DatabaseStorage implements IStorage {
     messages.clear();
     nextMessageId = 1;
     await saveMessages();
+  }
+
+  async deleteAllUsers(): Promise<void> {
+    await loadUsers();
+    users.clear();
+    nextUserId = 1;
+    await saveUsers();
   }
 
   async archiveOldMessages(before: Date): Promise<Message[]> {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { format } from "date-fns";
-import { Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock, Trash2 } from "lucide-react";
+import { Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock, Trash2, MoreVertical } from "lucide-react";
 import { useMessages, useSendMessage, useUsers, useChatWebSocket } from "@/hooks/use-chat";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -114,6 +114,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   const [activeChatLabel, setActiveChatLabel] = useState<string>('general');
   const [isPrivate, setIsPrivate] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   useChatWebSocket(username);
 
   const openDm = (otherUser: string) => {
@@ -128,7 +129,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
     setIsPrivate(false);
   };
 
-  const handleDeleteAll = async () => {
+  const handleDeleteAllMessages = async () => {
     if (username !== 'dapetonman' || deleting) return;
     setDeleting(true);
     const res = await fetch('/api/messages', {
@@ -137,8 +138,26 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
       body: JSON.stringify({ username }),
     });
     setDeleting(false);
+    setMenuOpen(false);
     if (!res.ok) {
       toast({ title: 'Error', description: 'Failed to delete messages', variant: 'destructive' });
+      return;
+    }
+    window.location.reload();
+  };
+
+  const handleDeleteAllUsers = async () => {
+    if (username !== 'dapetonman' || deleting) return;
+    setDeleting(true);
+    const res = await fetch('/api/users', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username }),
+    });
+    setDeleting(false);
+    setMenuOpen(false);
+    if (!res.ok) {
+      toast({ title: 'Error', description: 'Failed to delete users', variant: 'destructive' });
       return;
     }
     window.location.reload();
@@ -153,10 +172,21 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
       </div>
       <div className="flex-1 flex flex-col min-w-0"><ChatWindow key={activeChatId} chatId={activeChatId} username={username} chatLabel={activeChatLabel} isPrivate={isPrivate} /></div>
       {username === 'dapetonman' && (
-        <button data-testid="button-delete-all-messages" onClick={handleDeleteAll} disabled={deleting} className="fixed bottom-4 right-4 z-50 inline-flex items-center gap-2 rounded-full bg-destructive px-4 py-3 text-sm font-semibold text-destructive-foreground shadow-lg hover:opacity-90 disabled:opacity-60">
-          {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-          Delete all messages
-        </button>
+        <div className="fixed bottom-4 right-4 z-50">
+          <button data-testid="button-admin-menu" onClick={() => setMenuOpen((v) => !v)} className="inline-flex items-center gap-2 rounded-full bg-destructive px-4 py-3 text-sm font-semibold text-destructive-foreground shadow-lg hover:opacity-90">
+            <MoreVertical className="h-4 w-4" /> Admin menu
+          </button>
+          {menuOpen && (
+            <div className="absolute bottom-14 right-0 w-56 rounded-xl border border-border bg-card p-2 shadow-xl">
+              <button data-testid="button-delete-all-messages" onClick={handleDeleteAllMessages} disabled={deleting} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-destructive/10 text-foreground">
+                <Trash2 className="h-4 w-4" /> Delete all messages
+              </button>
+              <button data-testid="button-delete-all-users" onClick={handleDeleteAllUsers} disabled={deleting} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-destructive/10 text-foreground">
+                <Users className="h-4 w-4" /> Delete all users
+              </button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
