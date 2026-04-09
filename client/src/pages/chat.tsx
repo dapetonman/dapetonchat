@@ -115,7 +115,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   useChatWebSocket(username, activeChatId);
   const openDm = (otherUser: string) => { setActiveChatId(getDmChatId(username, otherUser)); setActiveChatLabel(otherUser); setIsPrivate(true); };
   const openGeneral = () => { setActiveChatId('general'); setActiveChatLabel('general'); setIsPrivate(false); };
-  const otherUsers = allUsers.filter(u => u.username !== username);
+  const otherUsers = allUsers;
 
   return (
     <div className="h-screen w-full bg-background flex font-sans overflow-hidden">
