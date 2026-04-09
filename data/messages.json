@@ -14,5 +14,13 @@
     "chatId": "general",
     "replyToId": null,
     "createdAt": "2026-04-09T18:35:40.006Z"
+  },
+  {
+    "id": 3,
+    "username": "dapetonman",
+    "content": "b",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-09T18:40:01.188Z"
   }
 ]
