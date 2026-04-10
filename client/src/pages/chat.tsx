@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { format } from "date-fns";
+import MarkdownIt from "markdown-it";
 import { Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock, Trash2, MoreVertical, Image } from "lucide-react";
 import { useMessages, useSendMessage, useUsers, useChatWebSocket } from "@/hooks/use-chat";
 import { useAuth } from "@/hooks/use-auth";
@@ -12,6 +13,31 @@ import type { Message } from "@shared/schema";
 
 const ADMIN_USERNAME = "dapetonman";
 const APP_TITLE = "dapetonchat";
+const markdown = new MarkdownIt({
+  linkify: true,
+  breaks: true,
+});
+markdown.renderer.rules.underline_open = () => "<u>";
+markdown.renderer.rules.underline_close = () => "</u>";
+markdown.inline.ruler.before("emphasis", "underline", (state, silent) => {
+  const start = state.pos;
+  if (state.src.charCodeAt(start) !== 0x5f || state.src.charCodeAt(start + 1) !== 0x5f) return false;
+  const end = state.src.indexOf("__", start + 2);
+  if (end === -1) return false;
+  if (!silent) {
+    state.push("underline_open", "u", 1);
+    state.pos = start + 2;
+    state.pending = state.src.slice(start + 2, end);
+    state.push("text", "", 0).content = state.pending;
+    state.push("underline_close", "u", -1);
+    state.pos = end + 2;
+  }
+  return true;
+});
+
+function renderMessage(content: string) {
+  return { __html: markdown.renderInline(content) };
+}
 
 function isImageMessage(content: string) {
   return content.startsWith("/view/");
@@ -138,7 +164,7 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
                     </div>
                   ) : (
                     <div className={`relative group max-w-[75%] px-4 py-2 rounded-2xl text-sm break-words cursor-pointer select-none transition-all ${isMe ? 'bg-primary text-primary-foreground rounded-tr-sm' : 'bg-muted text-foreground rounded-tl-sm'} hover:opacity-90 active:scale-[0.99]`} onClick={(e) => { if (e.shiftKey) setReplyTo(msg); }}>
-                      {msg.content}
+                      <span dangerouslySetInnerHTML={renderMessage(msg.content)} />
                       <button onClick={(e) => { e.stopPropagation(); setReplyTo(msg); }} className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-full bg-card border border-border shadow-sm ${isMe ? '-left-8' : '-right-8'}`}><Reply className="w-3 h-3" /></button>
                     </div>
                   )}
