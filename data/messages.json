@@ -14,5 +14,29 @@
     "chatId": "general",
     "replyToId": null,
     "createdAt": "2026-04-10T16:14:47.720Z"
+  },
+  {
+    "id": 3,
+    "username": "test account 1",
+    "content": "**burger**",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-10T18:11:03.621Z"
+  },
+  {
+    "id": 4,
+    "username": "test account 1",
+    "content": "__eats__",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-10T18:11:14.104Z"
+  },
+  {
+    "id": 5,
+    "username": "test account 1",
+    "content": "--eats--",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-10T18:11:18.285Z"
   }
 ]

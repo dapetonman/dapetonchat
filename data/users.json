@@ -10,5 +10,11 @@
     "username": "test",
     "password": "test",
     "createdAt": "2026-04-10T16:14:23.461Z"
+  },
+  {
+    "id": 3,
+    "username": "test account 1",
+    "password": "be",
+    "createdAt": "2026-04-10T18:10:52.770Z"
   }
 ]
