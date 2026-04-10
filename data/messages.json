@@ -6,5 +6,13 @@
     "chatId": "general",
     "replyToId": null,
     "createdAt": "2026-04-09T18:44:52.082Z"
+  },
+  {
+    "id": 2,
+    "username": "test",
+    "content": "/view/b2befd1904da74acdbcbb3ea7a4b3345",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-10T16:14:47.720Z"
   }
 ]
