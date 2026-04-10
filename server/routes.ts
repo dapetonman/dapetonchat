@@ -10,22 +10,80 @@ const ADMIN_USERNAME = "dapetonman";
 const CLEANUP_MS = 60 * 60 * 1000;
 
 const screenshotCache = new Map<string, { buffer: Buffer; contentType: string }>();
-
 const upload = multer({ storage: multer.memoryStorage() });
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
   const clients = new Map<WebSocket, { username: string }>();
+  const voiceRoom = new Set<string>();
+
+  function sendToUser(username: string, msg: object) {
+    const data = JSON.stringify(msg);
+    clients.forEach((info, ws) => {
+      if (info.username === username && ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+  }
+
+  function broadcastVoiceUsers() {
+    const users = [...voiceRoom];
+    const data = JSON.stringify({ type: "voice_users", users });
+    clients.forEach((_, ws) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    });
+  }
 
   wss.on("connection", (ws) => {
-    ws.on("message", (data) => {
+    ws.on("message", (raw) => {
       try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === "identify") clients.set(ws, { username: msg.username });
+        const msg = JSON.parse(raw.toString());
+
+        if (msg.type === "identify") {
+          clients.set(ws, { username: msg.username });
+          ws.send(JSON.stringify({ type: "voice_users", users: [...voiceRoom] }));
+        }
+
+        const username = clients.get(ws)?.username;
+        if (!username) return;
+
+        if (msg.type === "voice_join") {
+          const existingUsers = [...voiceRoom];
+          voiceRoom.add(username);
+          broadcastVoiceUsers();
+          existingUsers.forEach((existingUser) => {
+            sendToUser(existingUser, { type: "voice_new_peer", username });
+          });
+        }
+
+        if (msg.type === "voice_leave") {
+          voiceRoom.delete(username);
+          broadcastVoiceUsers();
+          clients.forEach((_, clientWs) => {
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ type: "voice_peer_left", username }));
+            }
+          });
+        }
+
+        if (msg.type === "voice_signal") {
+          sendToUser(msg.to, { type: "voice_signal", from: username, data: msg.data });
+        }
       } catch {}
     });
 
     ws.on("close", () => {
+      const info = clients.get(ws);
+      if (info && voiceRoom.has(info.username)) {
+        voiceRoom.delete(info.username);
+        broadcastVoiceUsers();
+        const leftMsg = JSON.stringify({ type: "voice_peer_left", username: info.username });
+        clients.forEach((_, clientWs) => {
+          if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(leftMsg);
+          }
+        });
+      }
       clients.delete(ws);
     });
   });
@@ -33,7 +91,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   function broadcastToChat(message: any, chatId: string) {
     const payload: WsMessage<any> = { type: WS_EVENTS.CHAT_MESSAGE, payload: message };
     const data = JSON.stringify(payload);
-
     clients.forEach((info, client) => {
       if (client.readyState !== WebSocket.OPEN) return;
       if (chatId === "general" || chatId.split("_").includes(info.username)) client.send(data);
@@ -138,16 +195,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!req.file) return res.status(400).json({ message: "No image provided" });
       const { username, chatId } = req.body ?? {};
       if (!username || !chatId) return res.status(400).json({ message: "username and chatId are required" });
-
       const id = randomBytes(16).toString("hex");
       screenshotCache.set(id, { buffer: req.file.buffer, contentType: req.file.mimetype || "image/png" });
       setTimeout(() => screenshotCache.delete(id), CLEANUP_MS);
-
       const imageUrl = `/view/${id}`;
-
       const message = await storage.createMessage({ username, content: imageUrl, chatId, replyToId: null });
       broadcastToChat(message, chatId);
-
       res.json({ url: imageUrl });
     } catch (err) {
       console.error("Upload error:", err);

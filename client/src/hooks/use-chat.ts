@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Message } from "@shared/schema";
+import { dispatchWsMessage, setActiveWs } from "@/lib/ws-bus";
 
 export function useMessages(chatId: string) {
   return useQuery<Message[]>({
@@ -55,6 +56,7 @@ export function useChatWebSocket(username: string) {
     const connect = () => {
       ws = new WebSocket(wsUrl);
       wsRef.current = ws;
+      setActiveWs(ws);
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: "identify", username }));
@@ -74,18 +76,23 @@ export function useChatWebSocket(username: string) {
           if (data.type === "reload") {
             window.location.reload();
           }
+          dispatchWsMessage(data);
         } catch {}
       };
 
       ws.onclose = () => {
+        setActiveWs(null);
         reconnectTimer = setTimeout(connect, 3000);
       };
     };
 
     connect();
     return () => {
+      setActiveWs(null);
       ws?.close();
       clearTimeout(reconnectTimer);
     };
   }, [username, queryClient]);
+
+  return wsRef;
 }
