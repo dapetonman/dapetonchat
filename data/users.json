@@ -4,5 +4,11 @@
     "username": "dapetonman",
     "password": "!@#123Ab",
     "createdAt": "2026-04-09T18:44:24.289Z"
+  },
+  {
+    "id": 2,
+    "username": "test",
+    "password": "test",
+    "createdAt": "2026-04-10T16:14:23.461Z"
   }
 ]

@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { format } from "date-fns";
-import { Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock, Trash2, MoreVertical } from "lucide-react";
+import { Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock, Trash2, MoreVertical, Image } from "lucide-react";
 import { useMessages, useSendMessage, useUsers, useChatWebSocket } from "@/hooks/use-chat";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,10 @@ import type { Message } from "@shared/schema";
 
 const ADMIN_USERNAME = "dapetonman";
 const APP_TITLE = "dapetonchat";
+
+function isImageMessage(content: string) {
+  return content.startsWith("/view/");
+}
 
 function AuthScreen({ onAuth }: { onAuth: () => void }) {
   const { login, register } = useAuth();
@@ -53,14 +57,46 @@ function AuthScreen({ onAuth }: { onAuth: () => void }) {
 function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string; username: string; chatLabel: string; isPrivate: boolean; }) {
   const { data: messages = [], isLoading } = useMessages(chatId);
   const { mutate: sendMessage, isPending: isSending } = useSendMessage();
+  const { toast } = useToast();
   const [content, setContent] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [uploading, setUploading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const vp = scrollRef.current?.querySelector('[data-radix-scroll-area-viewport]');
     if (vp) vp.scrollTop = vp.scrollHeight;
   }, [messages]);
+
+  const uploadImage = useCallback(async (blob: Blob) => {
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("image", blob, "screenshot.png");
+      form.append("username", username);
+      form.append("chatId", chatId);
+      const res = await fetch("/upload", { method: "POST", body: form });
+      if (!res.ok) throw new Error("Upload failed");
+    } catch {
+      toast({ title: "Upload failed", description: "Could not send the image.", variant: "destructive" });
+    } finally {
+      setUploading(false);
+    }
+  }, [username, chatId, toast]);
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!e.clipboardData) return;
+      const items = Array.from(e.clipboardData.items);
+      const imgItem = items.find((item) => item.type.startsWith("image/"));
+      if (!imgItem) return;
+      e.preventDefault();
+      const blob = imgItem.getAsFile();
+      if (blob) uploadImage(blob);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [uploadImage]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,6 +111,7 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
         {isPrivate ? <Lock className="w-4 h-4 text-muted-foreground" /> : <Hash className="w-4 h-4 text-muted-foreground" />}
         <span className="font-semibold text-sm">{chatLabel}</span>
         {isPrivate && <span className="text-[10px] uppercase tracking-wider font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">Private</span>}
+        <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-1"><Image className="w-3 h-3" /> Paste image to share</span>
       </div>
       <ScrollArea className="flex-1 px-6 py-4" ref={scrollRef}>
         {isLoading ? <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div> : (
@@ -83,14 +120,28 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
               const isMe = msg.username === username;
               const showUsername = i === 0 || messages[i - 1].username !== msg.username;
               const replyTarget = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
+              const isImg = isImageMessage(msg.content);
               return (
                 <div key={msg.id} data-testid={`message-${msg.id}`} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} ${showUsername ? 'mt-4' : 'mt-0.5'}`}>
                   {showUsername && <div className={`flex items-baseline gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}><span className={`text-xs font-bold ${msg.username === ADMIN_USERNAME ? 'text-red-500' : ''}`}>{isMe ? 'You' : msg.username}</span><span className="text-[10px] text-muted-foreground">{format(new Date(msg.createdAt), 'MMM d, h:mm a')}</span></div>}
-                  {replyTarget && <div className={`mb-1 text-xs text-muted-foreground bg-muted/40 px-2 py-1 rounded-lg border-l-2 border-primary/30 flex items-center gap-1 max-w-[75%]`}><Reply className="w-3 h-3 shrink-0" /><span className="truncate"><span className="font-medium">{replyTarget.username}:</span> {replyTarget.content}</span></div>}
-                  <div className={`relative group max-w-[75%] px-4 py-2 rounded-2xl text-sm break-words cursor-pointer select-none transition-all ${isMe ? 'bg-primary text-primary-foreground rounded-tr-sm' : 'bg-muted text-foreground rounded-tl-sm'} hover:opacity-90 active:scale-[0.99]`} onClick={(e) => { if (e.shiftKey) setReplyTo(msg); }}>
-                    {msg.content}
-                    <button onClick={(e) => { e.stopPropagation(); setReplyTo(msg); }} className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-full bg-card border border-border shadow-sm ${isMe ? '-left-8' : '-right-8'}`}><Reply className="w-3 h-3" /></button>
-                  </div>
+                  {replyTarget && <div className={`mb-1 text-xs text-muted-foreground bg-muted/40 px-2 py-1 rounded-lg border-l-2 border-primary/30 flex items-center gap-1 max-w-[75%]`}><Reply className="w-3 h-3 shrink-0" /><span className="truncate"><span className="font-medium">{replyTarget.username}:</span> {isImageMessage(replyTarget.content) ? '[image]' : replyTarget.content}</span></div>}
+                  {isImg ? (
+                    <div className={`relative group max-w-[75%] rounded-2xl overflow-hidden ${isMe ? 'rounded-tr-sm' : 'rounded-tl-sm'}`}>
+                      <a href={msg.content} target="_blank" rel="noopener noreferrer">
+                        <img
+                          data-testid={`image-${msg.id}`}
+                          src={msg.content}
+                          alt="shared screenshot"
+                          className="max-w-full max-h-80 object-contain block hover:opacity-90 transition-opacity cursor-pointer"
+                        />
+                      </a>
+                    </div>
+                  ) : (
+                    <div className={`relative group max-w-[75%] px-4 py-2 rounded-2xl text-sm break-words cursor-pointer select-none transition-all ${isMe ? 'bg-primary text-primary-foreground rounded-tr-sm' : 'bg-muted text-foreground rounded-tl-sm'} hover:opacity-90 active:scale-[0.99]`} onClick={(e) => { if (e.shiftKey) setReplyTo(msg); }}>
+                      {msg.content}
+                      <button onClick={(e) => { e.stopPropagation(); setReplyTo(msg); }} className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-full bg-card border border-border shadow-sm ${isMe ? '-left-8' : '-right-8'}`}><Reply className="w-3 h-3" /></button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -101,8 +152,11 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
         <div className="max-w-3xl mx-auto">
           {replyTo && <div className="mb-2 px-3 py-2 bg-muted/50 rounded-lg flex items-center justify-between text-xs border border-border"><span className="flex items-center gap-2 text-muted-foreground"><Reply className="w-3 h-3" /> Replying to <span className="font-semibold text-foreground">@{replyTo.username}</span></span><button onClick={() => setReplyTo(null)} className="text-muted-foreground hover:text-foreground transition-colors">✕</button></div>}
           <form onSubmit={handleSubmit} className="flex gap-3">
-            <Input data-testid="input-message" value={content} onChange={(e) => setContent(e.target.value)} placeholder={isPrivate ? `Message ${chatLabel}...` : 'Message everyone...'} className="h-11 bg-muted/50 border-border focus-visible:ring-1 focus-visible:ring-primary" />
-            <Button data-testid="button-send" type="submit" size="icon" className="h-11 w-11 shrink-0 rounded-xl" disabled={!content.trim() || isSending}>{isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}</Button>
+            <div className="relative flex-1">
+              <Input data-testid="input-message" value={content} onChange={(e) => setContent(e.target.value)} placeholder={isPrivate ? `Message ${chatLabel}... (Ctrl+V to paste image)` : 'Message everyone... (Ctrl+V to paste image)'} className="h-11 bg-muted/50 border-border focus-visible:ring-1 focus-visible:ring-primary pr-10" />
+              {uploading && <div className="absolute right-3 top-1/2 -translate-y-1/2"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>}
+            </div>
+            <Button data-testid="button-send" type="submit" size="icon" className="h-11 w-11 shrink-0 rounded-xl" disabled={!content.trim() || isSending || uploading}>{isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}</Button>
           </form>
         </div>
       </div>

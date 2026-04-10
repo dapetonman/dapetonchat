@@ -1,10 +1,17 @@
 import type { Express } from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
+import multer from "multer";
+import { randomBytes } from "crypto";
 import { storage } from "./storage";
 import { WS_EVENTS, type WsMessage } from "@shared/schema";
 
 const ADMIN_USERNAME = "dapetonman";
+const CLEANUP_MS = 60 * 60 * 1000;
+
+const screenshotCache = new Map<string, { buffer: Buffer; contentType: string }>();
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
@@ -124,6 +131,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       console.error("Delete users error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
+  });
+
+  app.post("/upload", upload.single("image"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ message: "No image provided" });
+      const { username, chatId } = req.body ?? {};
+      if (!username || !chatId) return res.status(400).json({ message: "username and chatId are required" });
+
+      const id = randomBytes(16).toString("hex");
+      screenshotCache.set(id, { buffer: req.file.buffer, contentType: req.file.mimetype || "image/png" });
+      setTimeout(() => screenshotCache.delete(id), CLEANUP_MS);
+
+      const imageUrl = `/view/${id}`;
+
+      const message = await storage.createMessage({ username, content: imageUrl, chatId, replyToId: null });
+      broadcastToChat(message, chatId);
+
+      res.json({ url: imageUrl });
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/view/:id", (req, res) => {
+    const entry = screenshotCache.get(req.params.id);
+    if (!entry) return res.status(404).send("Image not found or expired");
+    res.setHeader("Content-Type", entry.contentType);
+    res.setHeader("Cache-Control", "no-store");
+    res.send(entry.buffer);
   });
 
   return httpServer;
