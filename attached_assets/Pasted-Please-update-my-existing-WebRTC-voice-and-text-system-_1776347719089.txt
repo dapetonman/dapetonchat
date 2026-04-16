@@ -1,0 +1,19 @@
+Please update my existing WebRTC voice and text system to include a video stream with the following hardware-specific optimizations for Intel N100 laptops
+
+1. Media Constraints: Update the getUserMedia function to use a resolution of 640x480 (480p) at 30fps. Set the contentHint of the video track to 'motion' to ensure smooth delivery.
+
+2. Hardware Acceleration: Create an SDP Munger function called forceH264. This function must parse the offer/answer SDP strings and move the H.264 payload IDs to the front of the m=video line. This is required to force the N100's hardware encoder and prevent high CPU usage.
+
+3. Bandwidth Management: Implement a function that uses RTCRtpSender.setParameters to cap the video bitrate at 1500kbps (1.5Mbps). Set the degradationPreference to 'maintain-framerate' so the connection stays fluid even if the network jitters.
+
+4. Integration: > - Add a <video> element to the HTML for both local and remote streams (set local to muted).
+
+5. Apply this to be an extra option to turn on while in a voice channel.
+
+6. Remodel the voice channel features to be its own section like a text channel on the right when clicked where the user can view and start a camera video stream. the voicechat symbol and hieroarchy should stay the same on the left side but when you click on the voice channel make it not join immeadately but show this window the right inwhich you click join voice channel then has the options for the camera stuff. also, add a end call button and the controls on the left bar for the voice channel shouldn't do anything but show the voice menu. if a user clicks on a text channel again, dont make it close the call but it can hide video feeds. video feeds only appear inside the window. this window as well should include the basic end call and such features.
+
+Ensure the ontrack event correctly maps the incoming stream to the remote video element.
+
+Apply the forceH264 logic to the SDP before setLocalDescription is called in the signaling flow.
+
+continue using the Google STUN servers for ICE candidates
