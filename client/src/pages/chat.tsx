@@ -4,7 +4,8 @@ import MarkdownIt from "markdown-it";
 import {
   Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock,
   Trash2, MoreVertical, Image, Mic, MicOff, Volume2, PhoneOff,
-  Phone, Video, VideoOff, Camera,
+  Phone, Video, VideoOff, Camera, Monitor, MonitorX, File,
+  FileText, FileImage, FileVideo, FileAudio, Download,
 } from "lucide-react";
 import { useMessages, useSendMessage, useUsers, useChatWebSocket } from "@/hooks/use-chat";
 import { useVoice } from "@/hooks/use-voice";
@@ -41,8 +42,71 @@ markdown.inline.ruler.before("emphasis", "underline", (state, silent) => {
 function renderMessage(content: string) {
   return { __html: markdown.renderInline(content) };
 }
+
 function isImageMessage(content: string) {
   return content.startsWith("/view/");
+}
+
+function isFileMessage(content: string) {
+  return content.startsWith("__file__:");
+}
+
+interface FileMeta {
+  url: string;
+  name: string;
+  size: number;
+}
+
+function parseFileMeta(content: string): FileMeta | null {
+  try {
+    return JSON.parse(content.slice("__file__:".length)) as FileMeta;
+  } catch {
+    return null;
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFileIcon(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp"].includes(ext)) return FileImage;
+  if (["mp4", "mov", "avi", "mkv", "webm"].includes(ext)) return FileVideo;
+  if (["mp3", "wav", "ogg", "flac", "aac"].includes(ext)) return FileAudio;
+  if (["txt", "md", "pdf", "doc", "docx", "csv"].includes(ext)) return FileText;
+  return File;
+}
+
+function FileCard({ meta, isMe }: { meta: FileMeta; isMe: boolean }) {
+  const ext = (meta.name.split(".").pop() ?? "file").toUpperCase();
+  const IconComponent = getFileIcon(meta.name);
+  return (
+    <a
+      href={meta.url}
+      download={meta.name}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`flex items-center gap-3 px-4 py-3 rounded-2xl text-sm border transition-all hover:opacity-90 active:scale-[0.99] max-w-[300px] ${
+        isMe
+          ? "bg-primary/90 text-primary-foreground border-primary/50 rounded-tr-sm"
+          : "bg-muted text-foreground border-border rounded-tl-sm"
+      }`}
+    >
+      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isMe ? "bg-white/20" : "bg-background"}`}>
+        <IconComponent className="w-5 h-5" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="font-medium truncate text-[13px]">{meta.name}</p>
+        <p className={`text-[11px] mt-0.5 ${isMe ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+          {ext} &middot; {formatFileSize(meta.size)}
+        </p>
+      </div>
+      <Download className={`w-4 h-4 shrink-0 ${isMe ? "text-primary-foreground/70" : "text-muted-foreground"}`} />
+    </a>
+  );
 }
 
 function useVideoRef(stream: MediaStream | null) {
@@ -109,17 +173,17 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
     if (vp) vp.scrollTop = vp.scrollHeight;
   }, [messages]);
 
-  const uploadImage = useCallback(async (blob: Blob) => {
+  const uploadFile = useCallback(async (file: Blob, filename: string) => {
     setUploading(true);
     try {
       const form = new FormData();
-      form.append("image", blob, "screenshot.png");
+      form.append("image", file, filename);
       form.append("username", username);
       form.append("chatId", chatId);
       const res = await fetch("/upload", { method: "POST", body: form });
       if (!res.ok) throw new Error();
     } catch {
-      toast({ title: "Upload failed", description: "Could not send the image.", variant: "destructive" });
+      toast({ title: "Upload failed", description: "Could not send the file.", variant: "destructive" });
     } finally {
       setUploading(false);
     }
@@ -133,11 +197,11 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
       if (!imgItem) return;
       e.preventDefault();
       const blob = imgItem.getAsFile();
-      if (blob) uploadImage(blob);
+      if (blob) uploadFile(blob, "screenshot.png");
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [uploadImage]);
+  }, [uploadFile]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -149,18 +213,8 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
   const handleFileDrop = useCallback(async (files: FileList | null) => {
     if (!files?.length) return;
     const file = files[0];
-    const form = new FormData();
-    form.append("image", file, file.name);
-    form.append("username", username);
-    form.append("chatId", chatId);
-    setUploading(true);
-    try {
-      const res = await fetch("/upload", { method: "POST", body: form });
-      if (!res.ok) throw new Error();
-    } finally {
-      setUploading(false);
-    }
-  }, [chatId, username]);
+    await uploadFile(file, file.name);
+  }, [uploadFile]);
 
   return (
     <div
@@ -173,7 +227,7 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
         {isPrivate ? <Lock className="w-4 h-4 text-muted-foreground" /> : <Hash className="w-4 h-4 text-muted-foreground" />}
         <span className="font-semibold text-sm">{chatLabel}</span>
         {isPrivate && <span className="text-[10px] uppercase tracking-wider font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">Private</span>}
-        <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-1"><Image className="w-3 h-3" /> Paste image to share</span>
+        <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-1"><Image className="w-3 h-3" /> Paste or drag to share</span>
       </div>
       <ScrollArea className="flex-1 px-6 py-4" ref={scrollRef}>
         {isLoading ? (
@@ -185,6 +239,8 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
               const showUsername = i === 0 || messages[i - 1].username !== msg.username;
               const replyTarget = msg.replyToId ? messages.find((m) => m.id === msg.replyToId) : null;
               const isImg = isImageMessage(msg.content);
+              const isFile = isFileMessage(msg.content);
+              const fileMeta = isFile ? parseFileMeta(msg.content) : null;
               return (
                 <div key={msg.id} data-testid={`message-${msg.id}`} className={`flex flex-col ${isMe ? "items-end" : "items-start"} ${showUsername ? "mt-4" : "mt-0.5"}`}>
                   {showUsername && (
@@ -196,17 +252,33 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
                   {replyTarget && (
                     <div className="mb-1 text-xs text-muted-foreground bg-muted/40 px-2 py-1 rounded-lg border-l-2 border-primary/30 flex items-center gap-1 max-w-[75%]">
                       <Reply className="w-3 h-3 shrink-0" />
-                      <span className="truncate"><span className="font-medium">{replyTarget.username}:</span> {isImageMessage(replyTarget.content) ? "[image]" : replyTarget.content}</span>
+                      <span className="truncate">
+                        <span className="font-medium">{replyTarget.username}:</span>{" "}
+                        {isImageMessage(replyTarget.content) ? "[image]" : isFileMessage(replyTarget.content) ? "[file]" : replyTarget.content}
+                      </span>
                     </div>
                   )}
                   {isImg ? (
                     <div className={`relative group max-w-[75%] rounded-2xl overflow-hidden ${isMe ? "rounded-tr-sm" : "rounded-tl-sm"}`}>
                       <a href={msg.content} target="_blank" rel="noopener noreferrer">
-                        <img data-testid={`image-${msg.id}`} src={msg.content} alt="shared screenshot" className="max-w-full max-h-80 object-contain block hover:opacity-90 transition-opacity cursor-pointer" />
+                        <img data-testid={`image-${msg.id}`} src={msg.content} alt="shared image" className="max-w-full max-h-80 object-contain block hover:opacity-90 transition-opacity cursor-pointer" />
                       </a>
                     </div>
+                  ) : isFile && fileMeta ? (
+                    <div className="relative group">
+                      <FileCard meta={fileMeta} isMe={isMe} />
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setReplyTo(msg); }}
+                        className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-full bg-card border border-border shadow-sm ${isMe ? "-left-8" : "-right-8"}`}
+                      >
+                        <Reply className="w-3 h-3" />
+                      </button>
+                    </div>
                   ) : (
-                    <div className={`relative group max-w-[75%] px-4 py-2 rounded-2xl text-sm break-words cursor-pointer select-none transition-all ${isMe ? "bg-primary text-primary-foreground rounded-tr-sm" : "bg-muted text-foreground rounded-tl-sm"} hover:opacity-90 active:scale-[0.99]`} onClick={(e) => { if (e.shiftKey) setReplyTo(msg); }}>
+                    <div
+                      className={`relative group max-w-[75%] px-4 py-2 rounded-2xl text-sm break-words cursor-pointer select-none transition-all ${isMe ? "bg-primary text-primary-foreground rounded-tr-sm" : "bg-muted text-foreground rounded-tl-sm"} hover:opacity-90 active:scale-[0.99]`}
+                      onClick={(e) => { if (e.shiftKey) setReplyTo(msg); }}
+                    >
                       <span dangerouslySetInnerHTML={renderMessage(msg.content)} />
                       <button onClick={(e) => { e.stopPropagation(); setReplyTo(msg); }} className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-full bg-card border border-border shadow-sm ${isMe ? "-left-8" : "-right-8"}`}><Reply className="w-3 h-3" /></button>
                     </div>
@@ -263,20 +335,28 @@ function RemoteVideo({ stream, username }: { stream: MediaStream; username: stri
   );
 }
 
-function VoicePanel({ username, voiceUsers, inVoice, cameraEnabled, micError, localStream, remoteStreams, joinVoice, leaveVoice, toggleCamera }: {
+function VoicePanel({
+  username, voiceUsers, inVoice, cameraEnabled, screenSharing,
+  micError, localStream, remoteStreams,
+  joinVoice, leaveVoice, toggleCamera, shareScreen, stopScreenShare,
+}: {
   username: string;
   voiceUsers: string[];
   inVoice: boolean;
   cameraEnabled: boolean;
+  screenSharing: boolean;
   micError: string | null;
   localStream: MediaStream | null;
   remoteStreams: Map<string, MediaStream>;
-  joinVoice: (withCamera: boolean) => void;
+  joinVoice: (withCamera: boolean, withScreen?: boolean) => void;
   leaveVoice: () => void;
   toggleCamera: () => void;
+  shareScreen: () => void;
+  stopScreenShare: () => void;
 }) {
   const { toast } = useToast();
   const [joinWithCamera, setJoinWithCamera] = useState(false);
+  const [joinWithScreen, setJoinWithScreen] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
   const localVideoRef = useVideoRef(localStream);
 
@@ -290,7 +370,12 @@ function VoicePanel({ username, voiceUsers, inVoice, cameraEnabled, micError, lo
     setMicMuted((m) => !m);
   };
 
+  const handleJoin = () => {
+    joinVoice(joinWithCamera, joinWithScreen);
+  };
+
   const remoteEntries = [...remoteStreams.entries()];
+  const showLocalVideo = cameraEnabled || screenSharing;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-background">
@@ -308,7 +393,11 @@ function VoicePanel({ username, voiceUsers, inVoice, cameraEnabled, micError, lo
               <Volume2 className="w-9 h-9 text-muted-foreground" />
             </div>
             <h2 className="text-xl font-semibold mb-1">Voice Channel — general</h2>
-            <p className="text-muted-foreground text-sm">{voiceUsers.length > 0 ? `${voiceUsers.join(", ")} ${voiceUsers.length === 1 ? "is" : "are"} already here` : "No one is here yet. Be the first!"}</p>
+            <p className="text-muted-foreground text-sm">
+              {voiceUsers.length > 0
+                ? `${voiceUsers.join(", ")} ${voiceUsers.length === 1 ? "is" : "are"} already here`
+                : "No one is here yet. Be the first!"}
+            </p>
           </div>
 
           {voiceUsers.length > 0 && (
@@ -322,15 +411,30 @@ function VoicePanel({ username, voiceUsers, inVoice, cameraEnabled, micError, lo
             </div>
           )}
 
-          <div className="flex flex-col items-center gap-4 w-full max-w-xs">
-            <button
-              onClick={() => setJoinWithCamera((v) => !v)}
-              className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all w-full justify-center ${joinWithCamera ? "border-blue-500 bg-blue-500/10 text-blue-400" : "border-border text-muted-foreground hover:border-muted-foreground"}`}
+          <div className="flex flex-col items-center gap-3 w-full max-w-xs">
+            <div className="flex gap-3 w-full">
+              <button
+                data-testid="button-prejoin-camera"
+                onClick={() => { setJoinWithCamera((v) => !v); if (!joinWithCamera) setJoinWithScreen(false); }}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all flex-1 justify-center ${joinWithCamera ? "border-blue-500 bg-blue-500/10 text-blue-400" : "border-border text-muted-foreground hover:border-muted-foreground"}`}
+              >
+                {joinWithCamera ? <Camera className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+                Camera {joinWithCamera ? "ON" : "OFF"}
+              </button>
+              <button
+                data-testid="button-prejoin-screen"
+                onClick={() => { setJoinWithScreen((v) => !v); if (!joinWithScreen) setJoinWithCamera(false); }}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all flex-1 justify-center ${joinWithScreen ? "border-purple-500 bg-purple-500/10 text-purple-400" : "border-border text-muted-foreground hover:border-muted-foreground"}`}
+              >
+                {joinWithScreen ? <Monitor className="w-4 h-4" /> : <MonitorX className="w-4 h-4" />}
+                Screen {joinWithScreen ? "ON" : "OFF"}
+              </button>
+            </div>
+            <Button
+              data-testid="button-join-voice"
+              onClick={handleJoin}
+              className="w-full h-11 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-xl gap-2"
             >
-              {joinWithCamera ? <Camera className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
-              Camera {joinWithCamera ? "ON" : "OFF"}
-            </button>
-            <Button data-testid="button-join-voice" onClick={() => joinVoice(joinWithCamera)} className="w-full h-11 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-xl gap-2">
               <Phone className="w-4 h-4" /> Join Voice Channel
             </Button>
           </div>
@@ -338,20 +442,27 @@ function VoicePanel({ username, voiceUsers, inVoice, cameraEnabled, micError, lo
       ) : (
         <div className="flex-1 flex flex-col min-h-0">
           <div className="flex-1 p-6 overflow-y-auto">
-            {remoteEntries.length === 0 && !cameraEnabled ? (
+            {remoteEntries.length === 0 && !showLocalVideo ? (
               <div className="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground">
                 <Mic className="w-10 h-10" />
                 <p className="text-sm">Connected — waiting for others to join</p>
               </div>
             ) : (
-              <div className={`grid gap-4 h-full ${remoteEntries.length === 0 ? "grid-cols-1" : remoteEntries.length === 1 ? "grid-cols-2" : "grid-cols-2"}`}>
-                {cameraEnabled && localStream && (
+              <div className={`grid gap-4 h-full ${remoteEntries.length === 0 ? "grid-cols-1" : "grid-cols-2"}`}>
+                {showLocalVideo && localStream ? (
                   <div className="relative rounded-xl overflow-hidden bg-zinc-900 aspect-video">
-                    <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]" />
-                    <div className="absolute bottom-2 left-2 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">{username} (you)</div>
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className={`w-full h-full object-cover ${cameraEnabled && !screenSharing ? "scale-x-[-1]" : ""}`}
+                    />
+                    <div className="absolute bottom-2 left-2 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">
+                      {username} (you){screenSharing ? " · screen" : ""}
+                    </div>
                   </div>
-                )}
-                {!cameraEnabled && (
+                ) : (
                   <div className="relative rounded-xl overflow-hidden bg-zinc-900/60 aspect-video flex flex-col items-center justify-center gap-2 border border-border">
                     <div className={`w-16 h-16 rounded-full bg-muted flex items-center justify-center text-2xl font-bold uppercase ${username === ADMIN_USERNAME ? "text-red-500" : ""}`}>{username[0]}</div>
                     <span className="text-sm text-muted-foreground">{username} (you)</span>
@@ -382,6 +493,14 @@ function VoicePanel({ username, voiceUsers, inVoice, cameraEnabled, micError, lo
                 className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${cameraEnabled ? "bg-blue-500/20 text-blue-400 hover:bg-blue-500/30" : "bg-muted hover:bg-accent text-foreground"}`}
               >
                 {cameraEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+              </button>
+              <button
+                data-testid="button-toggle-screen"
+                onClick={screenSharing ? stopScreenShare : shareScreen}
+                title={screenSharing ? "Stop sharing screen" : "Share screen"}
+                className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${screenSharing ? "bg-purple-500/20 text-purple-400 hover:bg-purple-500/30" : "bg-muted hover:bg-accent text-foreground"}`}
+              >
+                {screenSharing ? <MonitorX className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
               </button>
               <button
                 data-testid="button-end-call"
@@ -419,8 +538,11 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   const [deleting, setDeleting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   useChatWebSocket(username);
-  const { voiceUsers, inVoice, cameraEnabled, micError, localStream, remoteStreams, joinVoice, leaveVoice, toggleCamera } = useVoice(username);
-  const [screenSharing, setScreenSharing] = useState(false);
+  const {
+    voiceUsers, inVoice, cameraEnabled, screenSharing,
+    micError, localStream, remoteStreams,
+    joinVoice, leaveVoice, toggleCamera, shareScreen, stopScreenShare,
+  } = useVoice(username);
 
   useEffect(() => {
     const updateTitle = () => { document.title = document.hidden ? "new message" : APP_TITLE; };
@@ -555,12 +677,15 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
             voiceUsers={voiceUsers}
             inVoice={inVoice}
             cameraEnabled={cameraEnabled}
+            screenSharing={screenSharing}
             micError={micError}
             localStream={localStream}
             remoteStreams={remoteStreams}
             joinVoice={joinVoice}
             leaveVoice={leaveVoice}
             toggleCamera={toggleCamera}
+            shareScreen={shareScreen}
+            stopScreenShare={stopScreenShare}
           />
         )}
       </div>

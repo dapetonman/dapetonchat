@@ -9,7 +9,7 @@ import { WS_EVENTS, type WsMessage } from "@shared/schema";
 const ADMIN_USERNAME = "dapetonman";
 const CLEANUP_MS = 60 * 60 * 1000;
 
-const screenshotCache = new Map<string, { buffer: Buffer; contentType: string }>();
+const screenshotCache = new Map<string, { buffer: Buffer; contentType: string; originalName: string; size: number }>();
 const upload = multer({ storage: multer.memoryStorage() });
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -213,16 +213,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/upload", upload.single("image"), async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ message: "No image provided" });
+      if (!req.file) return res.status(400).json({ message: "No file provided" });
       const { username, chatId } = req.body ?? {};
       if (!username || !chatId) return res.status(400).json({ message: "username and chatId are required" });
       const id = randomBytes(16).toString("hex");
-      screenshotCache.set(id, { buffer: req.file.buffer, contentType: req.file.mimetype || "image/png" });
+      const originalName = req.file.originalname || "file";
+      const fileSize = req.file.size;
+      const contentType = req.file.mimetype || "application/octet-stream";
+      screenshotCache.set(id, { buffer: req.file.buffer, contentType, originalName, size: fileSize });
       setTimeout(() => screenshotCache.delete(id), CLEANUP_MS);
-      const imageUrl = `/view/${id}`;
-      const message = await storage.createMessage({ username, content: imageUrl, chatId, replyToId: null });
+      const fileUrl = `/view/${id}`;
+      const isImage = contentType.startsWith("image/");
+      const content = isImage
+        ? fileUrl
+        : `__file__:${JSON.stringify({ url: fileUrl, name: originalName, size: fileSize })}`;
+      const message = await storage.createMessage({ username, content, chatId, replyToId: null });
       broadcastToChat(message, chatId);
-      res.json({ url: imageUrl });
+      res.json({ url: fileUrl, name: originalName, size: fileSize });
     } catch (err) {
       console.error("Upload error:", err);
       res.status(500).json({ message: "Internal server error" });

@@ -11,6 +11,11 @@ const VIDEO_CONSTRAINTS: MediaTrackConstraints = {
   frameRate: { ideal: 30 },
 };
 
+const SCREEN_CONSTRAINTS: DisplayMediaStreamOptions = {
+  video: { width: 1366, height: 768, frameRate: 10 } as MediaTrackConstraints,
+  audio: false,
+};
+
 function forceH264(sdp: string): string {
   const lines = sdp.split("\r\n");
   let videoPayloads: string[] = [];
@@ -141,6 +146,7 @@ export function useVoice(username: string) {
       peersRef.current.set(remoteUser, pc);
       senderMapRef.current.set(remoteUser, {});
       syncPeerTracks(remoteUser);
+
       const fileChannel = pc.createDataChannel("file");
       fileChannel.onopen = () => {
         setFilePeers((prev) => {
@@ -256,7 +262,7 @@ export function useVoice(username: string) {
   }, [username, createPeer, cleanupPeer]);
 
   const joinVoice = useCallback(
-    async (withCamera: boolean) => {
+    async (withCamera: boolean, withScreen: boolean = false) => {
       try {
         const constraints: MediaStreamConstraints = {
           audio: true,
@@ -276,17 +282,46 @@ export function useVoice(username: string) {
         sendWs({ type: "voice_join" });
         setInVoice(true);
         setMicError(null);
+
+        if (withScreen) {
+          try {
+            const screenStream = await navigator.mediaDevices.getDisplayMedia(SCREEN_CONSTRAINTS);
+            const screenTrack = screenStream.getVideoTracks()[0];
+            screenStreamRef.current = screenStream;
+            setScreenSharing(true);
+            screenTrack.contentHint = "motion";
+            screenTrack.onended = () => {
+              screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+              screenStreamRef.current = null;
+              setScreenSharing(false);
+              peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+              setLocalStream(new MediaStream([
+                ...(localStreamRef.current?.getAudioTracks() ?? []),
+              ]));
+            };
+            setLocalStream(new MediaStream([
+              ...(stream.getAudioTracks()),
+              screenTrack,
+            ]));
+          } catch {
+            // screen share cancelled — still joined voice
+          }
+        }
       } catch {
         setMicError("Could not access microphone. Please allow mic permission and try again.");
       }
     },
-    []
+    [syncPeerTracks]
   );
 
   const leaveVoice = useCallback(() => {
     peersRef.current.forEach((_, remoteUser) => cleanupPeer(remoteUser));
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
+    screenStreamRef.current = null;
+    cameraTrackRef.current = null;
+    cameraVideoTrackRef.current = null;
     setLocalStream(null);
     setRemoteStreams(new Map());
     setFilePeers(new Map());
@@ -298,15 +333,16 @@ export function useVoice(username: string) {
 
   const toggleCamera = useCallback(async () => {
     if (!localStreamRef.current || !inVoice) return;
-    const videoTracks = localStreamRef.current.getVideoTracks();
 
     if (cameraEnabled) {
-      videoTracks.forEach((t) => t.stop());
-      if (cameraVideoTrackRef.current) cameraVideoTrackRef.current.stop();
+      cameraVideoTrackRef.current?.stop();
       cameraVideoTrackRef.current = null;
       cameraTrackRef.current = null;
       peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-      setLocalStream(new MediaStream(localStreamRef.current.getAudioTracks()));
+      setLocalStream(new MediaStream([
+        ...localStreamRef.current.getAudioTracks(),
+        ...(screenStreamRef.current?.getVideoTracks() ?? []),
+      ]));
       setCameraEnabled(false);
     } else {
       try {
@@ -316,8 +352,8 @@ export function useVoice(username: string) {
         cameraVideoTrackRef.current = videoTrack;
         cameraTrackRef.current = videoTrack;
         localStreamRef.current.addTrack(videoTrack);
-        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
         peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
         setCameraEnabled(true);
       } catch {
         setMicError("Could not access camera.");
@@ -328,10 +364,7 @@ export function useVoice(username: string) {
   const shareScreen = useCallback(async () => {
     if (!inVoice) return;
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: 1366, height: 768, frameRate: 10 },
-        audio: false,
-      });
+      const screenStream = await navigator.mediaDevices.getDisplayMedia(SCREEN_CONSTRAINTS);
       const screenTrack = screenStream.getVideoTracks()[0];
       screenStreamRef.current = screenStream;
       setScreenSharing(true);
@@ -347,6 +380,9 @@ export function useVoice(username: string) {
         screenStreamRef.current = null;
         setScreenSharing(false);
         peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+        setLocalStream(new MediaStream([
+          ...(localStreamRef.current?.getAudioTracks() ?? []),
+        ]));
       };
       peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
       setLocalStream(new MediaStream([
@@ -354,7 +390,7 @@ export function useVoice(username: string) {
         screenTrack,
       ]));
     } catch {
-      setMicError("Could not share screen.");
+      // user cancelled or permission denied
     }
   }, [cameraEnabled, inVoice, syncPeerTracks]);
 
