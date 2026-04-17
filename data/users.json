@@ -3,24 +3,6 @@
     "id": 1,
     "username": "dapetonman",
     "password": "!@#123Ab",
-    "createdAt": "2026-04-09T18:44:24.289Z"
-  },
-  {
-    "id": 2,
-    "username": "test",
-    "password": "test",
-    "createdAt": "2026-04-10T16:14:23.461Z"
-  },
-  {
-    "id": 3,
-    "username": "test account 1",
-    "password": "be",
-    "createdAt": "2026-04-10T18:10:52.770Z"
-  },
-  {
-    "id": 4,
-    "username": "test account",
-    "password": "he",
-    "createdAt": "2026-04-16T14:03:58.991Z"
+    "createdAt": "2026-04-17T13:34:25.066Z"
   }
 ]

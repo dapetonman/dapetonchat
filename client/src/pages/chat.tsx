@@ -398,6 +398,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   const [menuOpen, setMenuOpen] = useState(false);
   useChatWebSocket(username);
   const { voiceUsers, inVoice, cameraEnabled, micError, localStream, remoteStreams, joinVoice, leaveVoice, toggleCamera } = useVoice(username);
+  const [screenSharing, setScreenSharing] = useState(false);
 
   useEffect(() => {
     const updateTitle = () => { document.title = document.hidden ? "new message" : APP_TITLE; };

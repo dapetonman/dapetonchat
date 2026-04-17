@@ -61,12 +61,17 @@ export function useVoice(username: string) {
   const [voiceUsers, setVoiceUsers] = useState<string[]>([]);
   const [inVoice, setInVoice] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [screenSharing, setScreenSharing] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
 
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
+  const cameraVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const senderMapRef = useRef<Map<string, { audio?: RTCRtpSender; video?: RTCRtpSender; screen?: RTCRtpSender }>>(new Map());
 
   const setRemoteStream = useCallback((remoteUser: string, stream: MediaStream | null) => {
     setRemoteStreams((prev) => {
@@ -84,10 +89,44 @@ export function useVoice(username: string) {
         pc.close();
         peersRef.current.delete(remoteUser);
       }
+      senderMapRef.current.delete(remoteUser);
       setRemoteStream(remoteUser, null);
     },
     [setRemoteStream]
   );
+
+  const syncPeerTracks = useCallback((remoteUser: string) => {
+    const pc = peersRef.current.get(remoteUser);
+    if (!pc) return;
+    const senders = senderMapRef.current.get(remoteUser) ?? {};
+    const audioTrack = localStreamRef.current?.getAudioTracks()[0] ?? null;
+    const cameraTrack = cameraTrackRef.current ?? null;
+    const screenTrack = screenStreamRef.current?.getVideoTracks()[0] ?? null;
+
+    if (audioTrack && !senders.audio) {
+      senders.audio = pc.addTrack(audioTrack, localStreamRef.current!);
+    }
+
+    if (cameraTrack && cameraTrack.enabled && !senders.video) {
+      senders.video = pc.addTrack(cameraTrack, localStreamRef.current!);
+    }
+
+    if (!cameraTrack?.enabled && senders.video) {
+      pc.removeTrack(senders.video);
+      delete senders.video;
+    }
+
+    if (screenTrack && !senders.screen) {
+      senders.screen = pc.addTrack(screenTrack, screenStreamRef.current!);
+    }
+
+    if (!screenTrack && senders.screen) {
+      pc.removeTrack(senders.screen);
+      delete senders.screen;
+    }
+
+    senderMapRef.current.set(remoteUser, senders);
+  }, []);
 
   const createPeer = useCallback(
     (remoteUser: string, initiator: boolean): RTCPeerConnection => {
@@ -99,13 +138,8 @@ export function useVoice(username: string) {
 
       const pc = new RTCPeerConnection(STUN_CONFIG);
       peersRef.current.set(remoteUser, pc);
-
-      localStreamRef.current?.getTracks().forEach((track) => {
-        if (track.kind === "video") {
-          track.contentHint = "motion";
-        }
-        pc.addTrack(track, localStreamRef.current!);
-      });
+      senderMapRef.current.set(remoteUser, {});
+      syncPeerTracks(remoteUser);
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
@@ -134,7 +168,7 @@ export function useVoice(username: string) {
 
       return pc;
     },
-    [username, setRemoteStream]
+    [username, setRemoteStream, syncPeerTracks]
   );
 
   useEffect(() => {
@@ -216,6 +250,7 @@ export function useVoice(username: string) {
     sendWs({ type: "voice_leave" });
     setInVoice(false);
     setCameraEnabled(false);
+    setScreenSharing(false);
   }, [cleanupPeer]);
 
   const toggleCamera = useCallback(async () => {
@@ -223,15 +258,11 @@ export function useVoice(username: string) {
     const videoTracks = localStreamRef.current.getVideoTracks();
 
     if (cameraEnabled) {
-      videoTracks.forEach((t) => {
-        t.stop();
-        localStreamRef.current!.removeTrack(t);
-      });
-      peersRef.current.forEach((pc) => {
-        pc.getSenders()
-          .filter((s) => s.track?.kind === "video")
-          .forEach((s) => pc.removeTrack(s));
-      });
+      videoTracks.forEach((t) => t.stop());
+      if (cameraVideoTrackRef.current) cameraVideoTrackRef.current.stop();
+      cameraVideoTrackRef.current = null;
+      cameraTrackRef.current = null;
+      peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
       setLocalStream(new MediaStream(localStreamRef.current.getAudioTracks()));
       setCameraEnabled(false);
     } else {
@@ -239,27 +270,73 @@ export function useVoice(username: string) {
         const videoStream = await navigator.mediaDevices.getUserMedia({ video: VIDEO_CONSTRAINTS });
         const videoTrack = videoStream.getVideoTracks()[0];
         videoTrack.contentHint = "motion";
+        cameraVideoTrackRef.current = videoTrack;
+        cameraTrackRef.current = videoTrack;
         localStreamRef.current.addTrack(videoTrack);
         setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-        peersRef.current.forEach((pc) => {
-          pc.addTrack(videoTrack, localStreamRef.current!);
-        });
+        peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
         setCameraEnabled(true);
       } catch {
         setMicError("Could not access camera.");
       }
     }
-  }, [cameraEnabled, inVoice]);
+  }, [cameraEnabled, inVoice, syncPeerTracks]);
+
+  const shareScreen = useCallback(async () => {
+    if (!inVoice) return;
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: 1366, height: 768, frameRate: 10 },
+        audio: false,
+      });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      screenStreamRef.current = screenStream;
+      setScreenSharing(true);
+      if (cameraEnabled) {
+        cameraVideoTrackRef.current?.stop();
+        cameraVideoTrackRef.current = null;
+        cameraTrackRef.current = null;
+        setCameraEnabled(false);
+      }
+      screenTrack.onended = () => {
+        screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+        screenStreamRef.current = null;
+        setScreenSharing(false);
+        peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+      };
+      peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+      setLocalStream(new MediaStream([
+        ...(localStreamRef.current?.getAudioTracks() ?? []),
+        screenTrack,
+      ]));
+    } catch {
+      setMicError("Could not share screen.");
+    }
+  }, [cameraEnabled, inVoice, syncPeerTracks]);
+
+  const stopScreenShare = useCallback(() => {
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    setScreenSharing(false);
+    peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+    setLocalStream(new MediaStream([
+      ...(localStreamRef.current?.getAudioTracks() ?? []),
+      ...(cameraTrackRef.current ? [cameraTrackRef.current] : []),
+    ]));
+  }, [syncPeerTracks]);
 
   return {
     voiceUsers,
     inVoice,
     cameraEnabled,
+    screenSharing,
     micError,
     localStream,
     remoteStreams,
     joinVoice,
     leaveVoice,
     toggleCamera,
+    shareScreen,
+    stopScreenShare,
   };
 }

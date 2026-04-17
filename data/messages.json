@@ -5,54 +5,6 @@
     "content": "hello",
     "chatId": "general",
     "replyToId": null,
-    "createdAt": "2026-04-09T18:44:52.082Z"
-  },
-  {
-    "id": 2,
-    "username": "test",
-    "content": "/view/b2befd1904da74acdbcbb3ea7a4b3345",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-10T16:14:47.720Z"
-  },
-  {
-    "id": 3,
-    "username": "test account 1",
-    "content": "**burger**",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-10T18:11:03.621Z"
-  },
-  {
-    "id": 4,
-    "username": "test account 1",
-    "content": "__eats__",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-10T18:11:14.104Z"
-  },
-  {
-    "id": 5,
-    "username": "test account 1",
-    "content": "--eats--",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-10T18:11:18.285Z"
-  },
-  {
-    "id": 6,
-    "username": "test account 1",
-    "content": "--chat--",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-10T18:17:42.945Z"
-  },
-  {
-    "id": 7,
-    "username": "test account 1",
-    "content": "**bold**",
-    "chatId": "general",
-    "replyToId": null,
-    "createdAt": "2026-04-10T18:17:50.603Z"
+    "createdAt": "2026-04-17T13:34:37.755Z"
   }
 ]

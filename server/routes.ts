@@ -16,6 +16,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
   const clients = new Map<WebSocket, { username: string }>();
   const voiceRoom = new Set<string>();
+  const voiceKicked = new Set<string>();
 
   function sendToUser(username: string, msg: object) {
     const data = JSON.stringify(msg);
@@ -48,6 +49,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!username) return;
 
         if (msg.type === "voice_join") {
+          if (voiceKicked.has(username)) return;
           const existingUsers = [...voiceRoom];
           voiceRoom.add(username);
           broadcastVoiceUsers();
@@ -186,6 +188,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ ok: true });
     } catch (err) {
       console.error("Delete users error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/voice/kick-all", async (req, res) => {
+    try {
+      const { username } = req.body ?? {};
+      if (username !== ADMIN_USERNAME) return res.status(403).json({ message: "Forbidden" });
+      [...voiceRoom].forEach((user) => voiceKicked.add(user));
+      voiceRoom.clear();
+      broadcastVoiceUsers();
+      clients.forEach((_, clientWs) => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: "voice_peer_left", username: "__all__" }));
+        }
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Kick voice users error:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   });
