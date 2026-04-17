@@ -30,5 +30,13 @@
     "chatId": "general",
     "replyToId": null,
     "createdAt": "2026-04-17T14:10:26.545Z"
+  },
+  {
+    "id": 5,
+    "username": "dapetonman",
+    "content": "__file__:{\"url\":\"/view/ec72cd3a0fef2838db37af5b0bce7552\",\"name\":\"microbit-Dice.hex\",\"size\":1302028}",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-04-17T14:18:35.341Z"
   }
 ]
