@@ -101,6 +101,7 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
   const [content, setContent] = useState("");
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -145,8 +146,29 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
     sendMessage({ username, content: trimmed, chatId, replyToId: replyTo?.id ?? null }, { onSuccess: () => { setContent(""); setReplyTo(null); } });
   };
 
+  const handleFileDrop = useCallback(async (files: FileList | null) => {
+    if (!files?.length) return;
+    const file = files[0];
+    const form = new FormData();
+    form.append("image", file, file.name);
+    form.append("username", username);
+    form.append("chatId", chatId);
+    setUploading(true);
+    try {
+      const res = await fetch("/upload", { method: "POST", body: form });
+      if (!res.ok) throw new Error();
+    } finally {
+      setUploading(false);
+    }
+  }, [chatId, username]);
+
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div
+      className={`flex flex-col flex-1 min-h-0 ${dragActive ? "ring-2 ring-primary ring-inset" : ""}`}
+      onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={(e) => { e.preventDefault(); setDragActive(false); handleFileDrop(e.dataTransfer.files); }}
+    >
       <div className="h-14 border-b border-border flex items-center gap-3 px-6 shrink-0 bg-card/40">
         {isPrivate ? <Lock className="w-4 h-4 text-muted-foreground" /> : <Hash className="w-4 h-4 text-muted-foreground" />}
         <span className="font-semibold text-sm">{chatLabel}</span>
@@ -440,6 +462,15 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
     if (!res.ok) toast({ title: "Error", description: "Failed to delete users", variant: "destructive" });
   };
 
+  const handleKickAllVoice = async () => {
+    if (username !== ADMIN_USERNAME || deleting) return;
+    setDeleting(true);
+    const res = await fetch("/api/voice/kick-all", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) });
+    setDeleting(false);
+    setMenuOpen(false);
+    if (!res.ok) toast({ title: "Error", description: "Failed to kick voice users", variant: "destructive" });
+  };
+
   return (
     <div className="h-screen w-full bg-background flex font-sans overflow-hidden">
       <div className="w-60 flex-none border-r border-border bg-card flex flex-col">
@@ -546,6 +577,9 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
               </button>
               <button data-testid="button-delete-all-users" onClick={handleDeleteAllUsers} disabled={deleting} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-destructive/10 text-foreground">
                 <Users className="h-4 w-4" /> Delete all users
+              </button>
+              <button data-testid="button-kick-all-voice" onClick={handleKickAllVoice} disabled={deleting} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-destructive/10 text-foreground">
+                <PhoneOff className="h-4 w-4" /> Kick all voice users
               </button>
             </div>
           )}

@@ -65,6 +65,7 @@ export function useVoice(username: string) {
   const [micError, setMicError] = useState<string | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [filePeers, setFilePeers] = useState<Map<string, RTCDataChannel>>(new Map());
 
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -140,6 +141,21 @@ export function useVoice(username: string) {
       peersRef.current.set(remoteUser, pc);
       senderMapRef.current.set(remoteUser, {});
       syncPeerTracks(remoteUser);
+      const fileChannel = pc.createDataChannel("file");
+      fileChannel.onopen = () => {
+        setFilePeers((prev) => {
+          const next = new Map(prev);
+          next.set(remoteUser, fileChannel);
+          return next;
+        });
+      };
+      fileChannel.onclose = () => {
+        setFilePeers((prev) => {
+          const next = new Map(prev);
+          next.delete(remoteUser);
+          return next;
+        });
+      };
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
@@ -149,6 +165,25 @@ export function useVoice(username: string) {
 
       pc.ontrack = (e) => {
         if (e.streams[0]) setRemoteStream(remoteUser, e.streams[0]);
+      };
+
+      pc.ondatachannel = (event) => {
+        const channel = event.channel;
+        if (channel.label !== "file") return;
+        channel.onopen = () => {
+          setFilePeers((prev) => {
+            const next = new Map(prev);
+            next.set(remoteUser, channel);
+            return next;
+          });
+        };
+        channel.onclose = () => {
+          setFilePeers((prev) => {
+            const next = new Map(prev);
+            next.delete(remoteUser);
+            return next;
+          });
+        };
       };
 
       pc.onconnectionstatechange = () => {
@@ -231,6 +266,13 @@ export function useVoice(username: string) {
         localStreamRef.current = stream;
         setLocalStream(stream);
         setCameraEnabled(withCamera);
+        if (withCamera) {
+          stream.getVideoTracks().forEach((track) => {
+            track.contentHint = "motion";
+            cameraTrackRef.current = track;
+            cameraVideoTrackRef.current = track;
+          });
+        }
         sendWs({ type: "voice_join" });
         setInVoice(true);
         setMicError(null);
@@ -247,6 +289,7 @@ export function useVoice(username: string) {
     localStreamRef.current = null;
     setLocalStream(null);
     setRemoteStreams(new Map());
+    setFilePeers(new Map());
     sendWs({ type: "voice_leave" });
     setInVoice(false);
     setCameraEnabled(false);
@@ -298,6 +341,7 @@ export function useVoice(username: string) {
         cameraTrackRef.current = null;
         setCameraEnabled(false);
       }
+      screenTrack.contentHint = "motion";
       screenTrack.onended = () => {
         screenStreamRef.current?.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
@@ -333,6 +377,7 @@ export function useVoice(username: string) {
     micError,
     localStream,
     remoteStreams,
+    filePeers,
     joinVoice,
     leaveVoice,
     toggleCamera,
