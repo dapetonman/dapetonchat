@@ -10,6 +10,10 @@ text based chat stored inside server memory
 webrtc voice chat and video chat implementation
 only the best insecure network for storing user passwords to the point where i am so confused even I dont know where they are
 
+update: i found it out
+
 
 should you use this? no. is this because i was bored in 3rd period? yes
-is this also because discord is banished from school wifi? yes
+is this also because discord is banished from school wifi? 
+
+this repository is changing a lot soon
