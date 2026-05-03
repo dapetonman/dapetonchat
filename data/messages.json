@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "username": "dapetonman",
+    "content": "hello",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-05-03T01:22:18.391Z"
+  },
+  {
+    "id": 2,
+    "username": "dapetonman",
+    "content": "world",
+    "chatId": "general",
+    "replyToId": null,
+    "createdAt": "2026-05-03T01:22:19.555Z"
+  }
+]

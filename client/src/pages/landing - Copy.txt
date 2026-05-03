@@ -1,0 +1,146 @@
+import { useState, useEffect, useCallback } from "react";
+import { useLocation } from "wouter";
+
+const ABOUT_ME_TEXT = `> BIO.
+> NAME: DAPETONMAN
+> MISSION: BUILDING THE FUTURE OF DAPETONPUTER.
+> CURRENT TRACK: 2ROTTED
+> CONTACT: SPINGLEDASH@GMAIL.COM
+
+I make things and listen to music. This website is a work in progress. Welcome to my little corner of the web.`;
+
+function TypeText({ text, speed = 50, onComplete, className }: { text: string; speed?: number; onComplete?: () => void; className?: string }) {
+  const [displayed, setDisplayed] = useState("");
+
+  useEffect(() => {
+    let i = 0;
+    setDisplayed("");
+    const interval = setInterval(() => {
+      if (i < text.length) {
+        setDisplayed(text.slice(0, i + 1));
+        i++;
+      } else {
+        clearInterval(interval);
+        onComplete?.();
+      }
+    }, speed);
+    return () => clearInterval(interval);
+  }, [text, speed, onComplete]);
+
+  return <span className={className}>{displayed}</span>;
+}
+
+export default function LandingPage() {
+  const [, navigate] = useLocation();
+  const [screen, setScreen] = useState<"main" | "about" | "music">("main");
+  const [typedWelcome, setTypedWelcome] = useState(false);
+  const [typedStatus, setTypedStatus] = useState(false);
+  const [buttonsRevealed, setButtonsRevealed] = useState(0);
+
+  const handleWelcomeDone = useCallback(() => setTypedWelcome(true), []);
+  const handleStatusDone = useCallback(() => setTypedStatus(true), []);
+
+  const buttonActions = [handleChat, handleAbout, handleMusic];
+  const buttonLabels = ["[ dapetonchat ]", "[ about me ]", "[ 2rotted music ]"];
+
+  function handleChat() { navigate("/chat"); }
+  function handleAbout() { setScreen("about"); }
+  function handleMusic() { setScreen("music"); }
+  function handleBack() { setScreen("main"); }
+
+  return (
+    <div className="min-h-screen bg-black text-white flex justify-center items-center overflow-hidden relative" style={{ fontFamily: "'VT323', monospace" }}>
+      <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet" />
+
+      <div className="absolute top-2.5 left-2.5 text-xl text-white" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive' }}>dapetonputer</div>
+
+      <div className="border-2 border-white p-10 w-[80%] max-w-[450px] text-center shadow-[8px_8px_0px_rgba(255,255,255,1)] min-h-[400px] max-h-[80vh] flex flex-col overflow-y-auto">
+        {screen === "main" && (
+          <>
+            <h1 className="text-5xl mb-2.5 font-normal uppercase">
+              <TypeText text="welcome!" speed={80} onComplete={handleWelcomeDone} />
+            </h1>
+            {typedWelcome && (
+              <span className="text-xl block mb-8 text-[#aaa] min-h-[1.2rem]">
+                <TypeText text="> dapetonputer technologies copyright 2026" speed={30} onComplete={handleStatusDone} />
+              </span>
+            )}
+            {typedStatus && (
+              <div className="flex flex-col gap-4">
+                {buttonLabels.map((label, i) => (
+                  <TypedButton
+                    key={label}
+                    text={label}
+                    index={i}
+                    shouldReveal={buttonsRevealed >= i}
+                    onTyped={() => setButtonsRevealed(prev => Math.max(prev, i + 1))}
+                    onClick={buttonActions[i]}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {screen === "about" && (
+          <>
+            <div className="text-left text-xl leading-[1.2] whitespace-pre-wrap mb-5">
+              <TypeText text={ABOUT_ME_TEXT} speed={8} />
+            </div>
+            <BackButton onClick={handleBack} />
+          </>
+        )}
+
+        {screen === "music" && (
+          <>
+            <div className="text-left text-xl leading-[1.2] mb-4">
+              <p>{`> STUPID MUSIC: TRUE...`}</p>
+              <p>{`> ARTIST: 2ROTTED`}</p>
+            </div>
+            <iframe style={{ borderRadius: 12, marginBottom: 15 }} src="https://open.spotify.com/embed/album/2dJ3N24XXEQCxR52ktYlL7?" width="100%" height={352} frameBorder="0" allowFullScreen allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy" />
+            <iframe allow="autoplay *; encrypted-media *; fullscreen *; clipboard-write" frameBorder="0" height={450} style={{ width: "100%", maxWidth: 660, overflow: "hidden", borderRadius: 10 }} sandbox="allow-forms allow-popups allow-same-origin allow-scripts allow-storage-access-by-user-activation allow-top-navigation-by-user-activation" src="https://embed.music.apple.com/us/artist/2rotted/1866429789" />
+            <BackButton onClick={handleBack} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TypedButton({ text, index, shouldReveal, onTyped, onClick }: { text: string; index: number; shouldReveal: boolean; onTyped: () => void; onClick: () => void }) {
+  const [displayed, setDisplayed] = useState("");
+  const [started, setStarted] = useState(false);
+
+  useEffect(() => {
+    if (!shouldReveal || started) return;
+    setStarted(true);
+    let i = 0;
+    const timeout = setTimeout(() => {
+      const interval = setInterval(() => {
+        if (i < text.length) {
+          setDisplayed(text.slice(0, i + 1));
+          i++;
+        } else {
+          clearInterval(interval);
+          onTyped();
+        }
+      }, 20);
+      return () => clearInterval(interval);
+    }, index === 0 ? 0 : 500);
+    return () => clearTimeout(timeout);
+  }, [shouldReveal, started, text, index, onTyped]);
+
+  if (!started && !shouldReveal) return null;
+
+  return (
+    <button className="block w-full border-2 border-white text-white text-3xl py-2.5 bg-transparent hover:bg-white hover:text-black cursor-pointer transition-[0.1s] mb-2.5" style={{ fontFamily: "'VT323', monospace" }} onClick={onClick}>
+      {displayed}
+    </button>
+  );
+}
+
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button className="block w-full border-2 border-white text-white text-3xl py-2.5 bg-transparent hover:bg-white hover:text-black cursor-pointer transition-[0.1s]" style={{ fontFamily: "'VT323', monospace" }} onClick={onClick}>[ BACK ]</button>
+  );
+}
