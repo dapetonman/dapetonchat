@@ -1,19 +1,24 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { format } from "date-fns";
 import MarkdownIt from "markdown-it";
+import DOMPurify from "dompurify";
 import {
   Send, Loader2, LogOut, Moon, Sun, Users, Reply, Hash, Lock,
   Trash2, MoreVertical, Image, Mic, MicOff, Volume2, PhoneOff,
   Phone, Video, VideoOff, Camera, Monitor, MonitorX, File,
-  FileText, FileImage, FileVideo, FileAudio, Download,
+  FileText, FileImage, FileVideo, FileAudio, Download, ArrowLeft, Menu, RefreshCw,
 } from "lucide-react";
 import { useMessages, useSendMessage, useUsers, useChatWebSocket } from "@/hooks/use-chat";
+import { useQueryClient } from "@tanstack/react-query";
 import { useVoice } from "@/hooks/use-voice";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Progress } from "@/components/ui/progress";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
+import { onWsMessage, sendWs } from "@/lib/ws-bus";
 import { CHANNEL_MESSAGE_IDS, getDmChatId, MAIN_CHANNELS } from "@shared/schema";
 import type { Message } from "@shared/schema";
 
@@ -40,7 +45,7 @@ markdown.inline.ruler.before("emphasis", "underline", (state, silent) => {
 });
 
 function renderMessage(content: string) {
-  return { __html: markdown.renderInline(content) };
+  return { __html: DOMPurify.sanitize(markdown.renderInline(content)) };
 }
 
 function isImageMessage(content: string) {
@@ -133,8 +138,12 @@ function AuthScreen({ onAuth }: { onAuth: () => void }) {
     setLoading(true);
     const error = tab === "login" ? await login(username.trim(), password) : await register(username.trim(), password);
     setLoading(false);
-    if (error) toast({ title: "Error", description: error, variant: "destructive" });
-    else onAuth();
+    if (error) {
+     toast({ title: 'Error', description: error, variant: 'destructive' });
+  } else {
+     // Force refresh for instant session sync
+     window.location.href = '/chat';
+    }
   };
 
   return (
@@ -153,6 +162,13 @@ function AuthScreen({ onAuth }: { onAuth: () => void }) {
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : tab === "login" ? "Sign In" : "Create Account"}
           </Button>
         </form>
+        <button
+          onClick={() => window.location.href = "/"}
+          className="fixed bottom-6 left-6 flex items-center gap-2 text-zinc-500 hover:text-white transition-colors"
+          style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive', fontWeight: "normal", fontSize: "1.1rem" }}
+        >
+          <ArrowLeft className="w-5 h-5" /> back
+        </button>
       </div>
     </div>
   );
@@ -165,28 +181,50 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
   const [content, setContent] = useState("");
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
   const [dragActive, setDragActive] = useState(false);
+  const typingTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isTypingRef = useRef<boolean>(false);
+  const typingThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const vp = scrollRef.current?.querySelector("[data-radix-scroll-area-viewport]");
     if (vp) vp.scrollTop = vp.scrollHeight;
   }, [messages]);
 
-  const uploadFile = useCallback(async (file: Blob, filename: string) => {
+  const uploadFile = useCallback((file: Blob, filename: string) => {
     setUploading(true);
-    try {
-      const form = new FormData();
-      form.append("image", file, filename);
-      form.append("username", username);
-      form.append("chatId", chatId);
-      const res = await fetch("/upload", { method: "POST", body: form });
-      if (!res.ok) throw new Error();
-    } catch {
-      toast({ title: "Upload failed", description: "Could not send the file.", variant: "destructive" });
-    } finally {
+    setUploadProgress(0);
+    const form = new FormData();
+    form.append("image", file, filename);
+    form.append("username", username);
+    form.append("chatId", chatId);
+
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) {
+        setUploadProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    });
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setUploading(false);
+        setUploadProgress(0);
+      } else {
+        setUploading(false);
+        setUploadProgress(0);
+        toast({ title: "Upload failed", description: "Could not send the file.", variant: "destructive" });
+      }
+    });
+    xhr.addEventListener("error", () => {
       setUploading(false);
-    }
+      setUploadProgress(0);
+      toast({ title: "Upload failed", description: "Could not send the file.", variant: "destructive" });
+    });
+    xhr.open("POST", "/upload");
+    xhr.send(form);
   }, [username, chatId, toast]);
 
   useEffect(() => {
@@ -200,14 +238,60 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
       if (blob) uploadFile(blob, "screenshot.png");
     };
     window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [uploadFile]);
+
+    const unsubTyping = onWsMessage("typing", ({ userId, username: typerName, chatId: typingChatId, status }: { userId: string; username: string; chatId: string; status?: string }) => {
+      console.log("RECEIVED TYPING:", { userId, typerName, typingChatId, status, currentChatId: chatId, isMe: userId === username });
+      if (userId === username) return;
+      if (typingChatId !== chatId) return;
+      if (status === "stopped") {
+        const existing = typingTimeoutRef.current.get(userId);
+        if (existing) { clearTimeout(existing); typingTimeoutRef.current.delete(userId); }
+        setTypingUsers((prev) => { const next = new Map(prev); next.delete(userId); return next; });
+        return;
+      }
+      setTypingUsers((prev) => { const next = new Map(prev); next.set(userId, typerName); return next; });
+      const existing = typingTimeoutRef.current.get(userId);
+      if (existing) { clearTimeout(existing); }
+      const timer = setTimeout(() => {
+        setTypingUsers((prev) => { const next = new Map(prev); next.delete(userId); return next; });
+        typingTimeoutRef.current.delete(userId);
+      }, 3000);
+      typingTimeoutRef.current.set(userId, timer);
+    });
+
+    return () => {
+      window.removeEventListener("paste", onPaste);
+      unsubTyping();
+      typingTimeoutRef.current.forEach((t) => clearTimeout(t));
+      typingTimeoutRef.current.clear();
+      if (typingThrottleRef.current) clearTimeout(typingThrottleRef.current);
+    };
+  }, [uploadFile, username, chatId]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = content.trim();
     if (!trimmed || isSending) return;
+    if (typingThrottleRef.current) { clearTimeout(typingThrottleRef.current); typingThrottleRef.current = null; }
+    sendWs({ type: "typing", chatId, userId: username, username, status: "stopped" });
+    setTypingUsers((prev) => { const next = new Map(prev); next.delete(username); return next; });
+    typingTimeoutRef.current.delete(username);
+    isTypingRef.current = false;
     sendMessage({ username, content: trimmed, chatId, replyToId: replyTo?.id ?? null }, { onSuccess: () => { setContent(""); setReplyTo(null); } });
+  };
+
+  const handleContentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setContent(e.target.value);
+    if (typingThrottleRef.current) return;
+    if (!isTypingRef.current) {
+      const payload = { type: "typing", chatId, userId: username, username };
+      console.log("[ChatWindow] Sending typing (first strike):", payload);
+      sendWs(payload);
+      isTypingRef.current = true;
+    }
+    typingThrottleRef.current = setTimeout(() => {
+      typingThrottleRef.current = null;
+    }, 2000);
   };
 
   const handleFileDrop = useCallback(async (files: FileList | null) => {
@@ -297,9 +381,23 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
               <button onClick={() => setReplyTo(null)} className="text-muted-foreground hover:text-foreground">✕</button>
             </div>
           )}
+          {uploading && (
+            <div className="mb-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                <span>Uploading...</span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <Progress value={uploadProgress} className="h-1.5" />
+            </div>
+          )}
+          <div className="h-4 mb-1.5 text-[10px] text-muted-foreground italic flex items-center">
+            {typingUsers.size > 0 && (
+              <span>{[...typingUsers.values()].join(", ")} {typingUsers.size === 1 ? "is" : "are"} typing...</span>
+            )}
+          </div>
           <form onSubmit={handleSubmit} className="flex gap-3">
             <div className="relative flex-1">
-              <Input data-testid="input-message" value={content} onChange={(e) => setContent(e.target.value)} placeholder={isPrivate ? `Message ${chatLabel}... (Ctrl+V to paste image)` : "Message everyone... (Ctrl+V to paste image)"} className="h-11 bg-muted/50 border-border focus-visible:ring-1 focus-visible:ring-primary pr-10" />
+              <Input data-testid="input-message" value={content} onChange={handleContentChange} placeholder={isPrivate ? `Message ${chatLabel}... (Ctrl+V to paste image)` : "Message everyone... (Ctrl+V to paste image)"} className="h-11 bg-muted/50 border-border focus-visible:ring-1 focus-visible:ring-primary pr-10" />
               {uploading && <div className="absolute right-3 top-1/2 -translate-y-1/2"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>}
             </div>
             <Button data-testid="button-send" type="submit" size="icon" className="h-11 w-11 shrink-0 rounded-xl" disabled={!content.trim() || isSending || uploading}>
@@ -312,25 +410,23 @@ function ChatWindow({ chatId, username, chatLabel, isPrivate }: { chatId: string
   );
 }
 
-function RemoteVideo({ stream, username }: { stream: MediaStream; username: string }) {
+function RemoteVideo({ stream, username, onClick }: { stream: MediaStream; username: string; onClick?: () => void }) {
   const ref = useVideoRef(stream);
   const hasVideo = stream.getVideoTracks().length > 0;
   return (
-    <div className="relative rounded-xl overflow-hidden bg-zinc-900 aspect-video flex items-center justify-center">
+    <div
+      onClick={onClick}
+      className="relative w-full aspect-video rounded-xl overflow-hidden bg-zinc-900 flex items-center justify-center cursor-pointer hover:ring-2 ring-primary transition-all"
+    >
       {hasVideo ? (
-        <video ref={ref} autoPlay playsInline className="w-full h-full object-cover" />
+        <video ref={ref} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
       ) : (
-        <>
-          <audio ref={(el) => { if (el && stream) el.srcObject = stream; }} autoPlay />
-          <div className="flex flex-col items-center gap-2">
-            <div className={`w-16 h-16 rounded-full bg-muted flex items-center justify-center text-2xl font-bold uppercase ${username === ADMIN_USERNAME ? "text-red-500" : "text-foreground"}`}>{username[0]}</div>
-            <span className={`text-sm font-medium ${username === ADMIN_USERNAME ? "text-red-500" : "text-muted-foreground"}`}>{username}</span>
-          </div>
-        </>
+        <div className="flex flex-col items-center justify-center gap-2">
+          <div className={`w-16 h-16 rounded-full bg-muted flex items-center justify-center text-2xl font-bold uppercase ${username === ADMIN_USERNAME ? "text-red-500" : "text-foreground"}`}>{username[0]}</div>
+          <span className={`text-sm font-medium ${username === ADMIN_USERNAME ? "text-red-500" : "text-muted-foreground"}`}>{username}</span>
+        </div>
       )}
-      {hasVideo && (
-        <div className="absolute bottom-2 left-2 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">{username}</div>
-      )}
+      <div className="absolute bottom-2 left-2 z-10 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">{username}</div>
     </div>
   );
 }
@@ -338,7 +434,7 @@ function RemoteVideo({ stream, username }: { stream: MediaStream; username: stri
 function VoicePanel({
   username, voiceUsers, inVoice, cameraEnabled, screenSharing,
   micError, localStream, remoteStreams,
-  joinVoice, leaveVoice, toggleCamera, shareScreen, stopScreenShare,
+  joinVoice, leaveVoice, toggleCamera, shareScreen, stopScreenShare, renegotiate,
 }: {
   username: string;
   voiceUsers: string[];
@@ -353,11 +449,13 @@ function VoicePanel({
   toggleCamera: () => void;
   shareScreen: () => void;
   stopScreenShare: () => void;
+  renegotiate: () => void;
 }) {
   const { toast } = useToast();
   const [joinWithCamera, setJoinWithCamera] = useState(false);
   const [joinWithScreen, setJoinWithScreen] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
+  const [focusedUserId, setFocusedUserId] = useState<string | null>(null);
   const localVideoRef = useVideoRef(localStream);
 
   useEffect(() => {
@@ -376,6 +474,21 @@ function VoicePanel({
 
   const remoteEntries = [...remoteStreams.entries()];
   const showLocalVideo = cameraEnabled || screenSharing;
+  const totalStreams = remoteEntries.length + (showLocalVideo ? 1 : 0);
+  const gridCols = totalStreams <= 1 ? "grid-cols-1" : totalStreams <= 4 ? "grid-cols-2" : "grid-cols-3";
+
+  const isLocalFocused = focusedUserId === "local";
+  const focusStream = isLocalFocused
+    ? { stream: localStream, username, isLocal: true }
+    : focusedUserId
+      ? { stream: remoteStreams.get(focusedUserId) ?? null, username: focusedUserId, isLocal: false }
+      : null;
+
+  const focusStreamRef = useVideoRef(focusStream?.stream ?? null);
+  const focusHasVideo = focusStream?.stream?.getVideoTracks().length > 0;
+
+  const otherRemoteEntries = remoteEntries.filter(([u]) => u !== focusedUserId);
+  const showLocalInGallery = showLocalVideo && !isLocalFocused;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-background">
@@ -441,36 +554,90 @@ function VoicePanel({
         </div>
       ) : (
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="flex-1 p-6 overflow-y-auto">
+          <div className="flex-1 p-6 overflow-y-auto max-h-full">
             {remoteEntries.length === 0 && !showLocalVideo ? (
               <div className="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground">
                 <Mic className="w-10 h-10" />
                 <p className="text-sm">Connected — waiting for others to join</p>
               </div>
+            ) : focusedUserId && focusStream?.stream ? (
+              <div className="flex flex-col gap-4 h-full">
+                <div
+                  onClick={() => setFocusedUserId(null)}
+                  className="relative w-full aspect-video rounded-xl overflow-hidden bg-zinc-900 flex items-center justify-center cursor-pointer hover:ring-2 ring-primary transition-all"
+                >
+                  {focusHasVideo ? (
+                    <video ref={focusStreamRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <div className={`w-20 h-20 rounded-full bg-muted flex items-center justify-center text-4xl font-bold uppercase ${focusStream.username === ADMIN_USERNAME ? "text-red-500" : "text-foreground"}`}>{focusStream.username[0]}</div>
+                      <span className={`text-xl font-medium ${focusStream.username === ADMIN_USERNAME ? "text-red-500" : "text-muted-foreground"}`}>{focusStream.username}{focusStream.isLocal ? " (you)" : ""}</span>
+                    </div>
+                  )}
+                  <div className="absolute bottom-2 left-2 z-10 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">Click to exit focus</div>
+                </div>
+                {otherRemoteEntries.length > 0 || showLocalInGallery ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {showLocalInGallery && localStream && (
+                      <div
+                        onClick={() => setFocusedUserId("local")}
+                        className="relative w-full aspect-video rounded-xl overflow-hidden bg-zinc-900 flex items-center justify-center cursor-pointer hover:ring-2 ring-primary transition-all"
+                      >
+                        <video
+                          ref={localVideoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`absolute inset-0 w-full h-full object-cover ${cameraEnabled && !screenSharing ? "scale-x-[-1]" : ""}`}
+                        />
+                        <div className="absolute bottom-2 left-2 z-10 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">
+                          {username} (you){screenSharing ? " · screen" : ""}
+                        </div>
+                      </div>
+                    )}
+                    {otherRemoteEntries.map(([remoteUser, stream]) => (
+                      <RemoteVideo
+                        key={remoteUser}
+                        stream={stream}
+                        username={remoteUser}
+                        onClick={() => setFocusedUserId(remoteUser)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             ) : (
-              <div className={`grid gap-4 h-full ${remoteEntries.length === 0 ? "grid-cols-1" : "grid-cols-2"}`}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {showLocalVideo && localStream ? (
-                  <div className="relative rounded-xl overflow-hidden bg-zinc-900 aspect-video">
+                  <div
+                    onClick={() => setFocusedUserId("local")}
+                    className="relative w-full aspect-video rounded-xl overflow-hidden bg-zinc-900 flex items-center justify-center cursor-pointer hover:ring-2 ring-primary transition-all"
+                  >
                     <video
                       ref={localVideoRef}
                       autoPlay
                       playsInline
                       muted
-                      className={`w-full h-full object-cover ${cameraEnabled && !screenSharing ? "scale-x-[-1]" : ""}`}
+                      className={`absolute inset-0 w-full h-full object-cover ${cameraEnabled && !screenSharing ? "scale-x-[-1]" : ""}`}
                     />
-                    <div className="absolute bottom-2 left-2 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">
+                    <div className="absolute bottom-2 left-2 z-10 text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-white">
                       {username} (you){screenSharing ? " · screen" : ""}
                     </div>
                   </div>
                 ) : (
-                  <div className="relative rounded-xl overflow-hidden bg-zinc-900/60 aspect-video flex flex-col items-center justify-center gap-2 border border-border">
+                  <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-zinc-900/60 flex flex-col items-center justify-center gap-2 border border-border">
                     <div className={`w-16 h-16 rounded-full bg-muted flex items-center justify-center text-2xl font-bold uppercase ${username === ADMIN_USERNAME ? "text-red-500" : ""}`}>{username[0]}</div>
                     <span className="text-sm text-muted-foreground">{username} (you)</span>
                     {micMuted && <MicOff className="w-4 h-4 text-red-400" />}
                   </div>
                 )}
                 {remoteEntries.map(([remoteUser, stream]) => (
-                  <RemoteVideo key={remoteUser} stream={stream} username={remoteUser} />
+                  <RemoteVideo
+                    key={remoteUser}
+                    stream={stream}
+                    username={remoteUser}
+                    onClick={() => setFocusedUserId(remoteUser)}
+                  />
                 ))}
               </div>
             )}
@@ -503,6 +670,14 @@ function VoicePanel({
                 {screenSharing ? <MonitorX className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
               </button>
               <button
+                data-testid="button-sync"
+                onClick={renegotiate}
+                title="Sync streams"
+                className="w-11 h-11 rounded-full bg-muted hover:bg-accent text-foreground flex items-center justify-center transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+              <button
                 data-testid="button-end-call"
                 onClick={leaveVoice}
                 title="End call"
@@ -529,7 +704,7 @@ function VoicePanel({
 }
 
 function ChatInterface({ username, onLogout, theme, setTheme }: { username: string; onLogout: () => void; theme: "light" | "dark"; setTheme: (t: "light" | "dark") => void }) {
-  const { data: allUsers = [] } = useUsers();
+  const { data: fetchedUsers = [] } = useUsers();
   const { toast } = useToast();
   const [activeView, setActiveView] = useState<"chat" | "voice">("chat");
   const [activeChatId, setActiveChatId] = useState<string>("general");
@@ -537,12 +712,76 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
   const [isPrivate, setIsPrivate] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [userOnlineMap, setUserOnlineMap] = useState<Map<string, boolean>>(new Map());
+  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   useChatWebSocket(username);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const unsub = onWsMessage("presence", (data: { userId: string; username?: string; online: boolean }) => {
+      console.log("[ChatInterface] Presence WS:", data);
+      const userKey = data.userId || data.username;
+      if (!userKey) return;
+      setUserOnlineMap((prev) => {
+        const next = new Map(prev);
+        next.set(userKey, data.online);
+        return next;
+      });
+      setOnlineUsers((prev) => {
+        const next = new Set(prev);
+        if (data.online) next.add(userKey);
+        else next.delete(userKey);
+        return next;
+      });
+    });
+    const unsubSync = onWsMessage("presence-sync", (data: { users: string[] }) => {
+      console.log("[ChatInterface] Presence sync WS:", data);
+      setOnlineUsers(new Set(data.users));
+      const nextMap = new Map<string, boolean>();
+      data.users.forEach((u) => nextMap.set(u, true));
+      setUserOnlineMap(nextMap);
+    });
+    const unsubRefreshUserList = onWsMessage("REFRESH_USER_LIST", () => {
+      console.log("Refreshing user list via WS...");
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+    });
+    return () => { unsub(); unsubSync(); unsubRefreshUserList(); };
+  }, [queryClient]);
+
+  const allUsers = fetchedUsers.map((u) => ({
+    ...u,
+    isOnline: u.username === username ? true : ((onlineUsers.has(u.username) || userOnlineMap.get(u.username)) ?? u.isOnline ?? false),
+  }));
+
   const {
     voiceUsers, inVoice, cameraEnabled, screenSharing,
     micError, localStream, remoteStreams,
-    joinVoice, leaveVoice, toggleCamera, shareScreen, stopScreenShare,
+    joinVoice, leaveVoice, toggleCamera, shareScreen, stopScreenShare, renegotiate,
   } = useVoice(username);
+
+  const remoteAudioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
+
+  useEffect(() => {
+    remoteStreams.forEach((stream, user) => {
+      let audioEl = remoteAudioRefs.current.get(user);
+      if (!audioEl) {
+        audioEl = document.createElement("audio");
+        audioEl.setAttribute("data-user", user);
+        remoteAudioRefs.current.set(user, audioEl);
+      }
+      audioEl.srcObject = stream;
+      audioEl.play().catch(() => {});
+    });
+    const currentUsers = new Set(remoteStreams.keys());
+    remoteAudioRefs.current.forEach((el, user) => {
+      if (!currentUsers.has(user)) {
+        el.pause();
+        el.srcObject = null;
+        remoteAudioRefs.current.delete(user);
+      }
+    });
+  }, [remoteStreams]);
 
   useEffect(() => {
     const updateTitle = () => { document.title = document.hidden ? "new message" : APP_TITLE; };
@@ -564,9 +803,9 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
     return () => window.removeEventListener("chat-new-message", onMsg as EventListener);
   }, []);
 
-  const openDm = (otherUser: string) => { setActiveChatId(getDmChatId(username, otherUser)); setActiveChatLabel(otherUser); setIsPrivate(true); setActiveView("chat"); };
-  const openGeneral = (channel: string) => { setActiveChatId(CHANNEL_MESSAGE_IDS[channel as keyof typeof CHANNEL_MESSAGE_IDS] ?? channel); setActiveChatLabel(channel); setIsPrivate(false); setActiveView("chat"); };
-  const openVoice = () => setActiveView("voice");
+  const openDm = (otherUser: string) => { setActiveChatId(getDmChatId(username, otherUser)); setActiveChatLabel(otherUser); setIsPrivate(true); setActiveView("chat"); setMobileMenuOpen(false); };
+  const openGeneral = (channel: string) => { setActiveChatId(CHANNEL_MESSAGE_IDS[channel as keyof typeof CHANNEL_MESSAGE_IDS] ?? channel); setActiveChatLabel(channel); setIsPrivate(false); setActiveView("chat"); setMobileMenuOpen(false); };
+  const openVoice = () => { setActiveView("voice"); setMobileMenuOpen(false); };
 
   const handleDeleteAllMessages = async () => {
     if (username !== ADMIN_USERNAME || deleting) return;
@@ -595,7 +834,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
 
   return (
     <div className="h-screen w-full bg-background flex font-sans overflow-hidden">
-      <div className="w-60 flex-none border-r border-border bg-card flex flex-col">
+      <div className="hidden md:flex w-60 flex-none border-r border-border bg-card flex-col">
         <div className="h-14 flex items-center px-4 border-b border-border shrink-0">
           <h1 className="text-xl text-foreground" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive', fontWeight: "normal" }}>dapetonchat</h1>
         </div>
@@ -647,9 +886,13 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
               <div className="space-y-0.5">
                 {allUsers.map((u) => {
                   const chatId = getDmChatId(username, u.username);
+                  const isUserOnline = u.username === username || onlineUsers.has(u.username) || onlineUsers.has(String(u.id));
                   return (
                     <button key={u.id} data-testid={`sidebar-user-${u.id}`} onClick={() => openDm(u.username)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeView === "chat" && activeChatId === chatId ? "bg-accent text-accent-foreground font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}>
-                      <div className={`w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase shrink-0 ${u.username === ADMIN_USERNAME ? "text-red-500" : ""}`}>{u.username[0]}</div>
+                      <div className="relative w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase shrink-0">
+                        {u.username[0]}
+                        <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-card ${isUserOnline ? "bg-green-500" : "bg-zinc-600"}`} />
+                      </div>
                       <span className={`truncate ${u.username === ADMIN_USERNAME ? "text-red-500" : ""}`}>{u.username}</span>
                     </button>
                   );
@@ -667,6 +910,93 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
           </div>
         </div>
       </div>
+
+      <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
+        <SheetTrigger asChild>
+          <button className="md:hidden fixed top-4 left-4 z-40 p-2 rounded-lg bg-card border border-border">
+            <Menu className="w-5 h-5" />
+          </button>
+        </SheetTrigger>
+        <SheetContent side="left" className="w-60 p-0">
+          <div className="h-14 flex items-center px-4 border-b border-border shrink-0">
+            <h1 className="text-xl text-foreground" style={{ fontFamily: '"Comic Sans MS", "Comic Sans", cursive', fontWeight: "normal" }}>dapetonchat</h1>
+          </div>
+          <ScrollArea className="flex-1">
+            <div className="p-3 space-y-5">
+              <div>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1">Text Channels</p>
+                <div className="space-y-1">
+                  {MAIN_CHANNELS.map((channel) => (
+                    <button key={channel} data-testid={`mobile-sidebar-channel-${channel}`} onClick={() => openGeneral(channel)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeView === "chat" && activeChatId === channel ? "bg-accent text-accent-foreground font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}>
+                      <Hash className="w-4 h-4 shrink-0" />{channel}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1 flex items-center gap-1">
+                  <Volume2 className="w-3 h-3" /> Voice Channels
+                </p>
+                <div className="space-y-1">
+                  <button
+                    data-testid="mobile-button-voice-general"
+                    onClick={openVoice}
+                    className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeView === "voice" ? "bg-accent text-accent-foreground font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}
+                  >
+                    <Volume2 className="w-4 h-4 shrink-0" />
+                    <span className="flex-1 text-left">general</span>
+                    {inVoice && <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" />}
+                    {!inVoice && voiceUsers.length > 0 && <span className="text-[10px] font-bold">{voiceUsers.length}</span>}
+                  </button>
+                  {voiceUsers.length > 0 && (
+                    <div className="ml-4 space-y-0.5">
+                      {voiceUsers.map((u) => (
+                        <div key={u} className="flex items-center gap-2 px-2 py-0.5 text-xs text-muted-foreground">
+                          <Mic className={`w-3 h-3 shrink-0 ${u === username ? "text-green-400" : ""}`} />
+                          <span className={u === ADMIN_USERNAME ? "text-red-500" : u === username ? "text-green-400" : ""}>{u === username ? `${u} (you)` : u}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-2 mb-1 flex items-center gap-1">
+                  <Users className="w-3 h-3" /> Users
+                </p>
+                <div className="space-y-0.5">
+                  {allUsers.map((u) => {
+                    const chatId = getDmChatId(username, u.username);
+                    const isUserOnline = u.username === username || onlineUsers.has(u.username) || onlineUsers.has(String(u.id));
+                    return (
+                      <button key={u.id} data-testid={`mobile-sidebar-user-${u.id}`} onClick={() => openDm(u.username)} className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors ${activeView === "chat" && activeChatId === chatId ? "bg-accent text-accent-foreground font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}>
+                        <div className="relative w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase shrink-0">
+                          {u.username[0]}
+                          <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-card ${isUserOnline ? "bg-green-500" : "bg-zinc-600"}`} />
+                        </div>
+                        <span className={`truncate ${u.username === ADMIN_USERNAME ? "text-red-500" : ""}`}>{u.username}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </ScrollArea>
+          <div className="p-3 border-t border-border shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="relative w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold uppercase shrink-0">
+                {username[0]}
+                <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-green-500 border border-card" />
+              </div>
+              <span className={`text-sm font-medium flex-1 truncate ${username === ADMIN_USERNAME ? "text-red-500" : ""}`}>{username}</span>
+              <button data-testid="mobile-button-theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">{theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}</button>
+              <button data-testid="mobile-button-logout" onClick={onLogout} className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"><LogOut className="w-4 h-4" /></button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <div className="flex-1 flex flex-col min-w-0">
         {activeView === "chat" ? (
@@ -686,6 +1016,7 @@ function ChatInterface({ username, onLogout, theme, setTheme }: { username: stri
             toggleCamera={toggleCamera}
             shareScreen={shareScreen}
             stopScreenShare={stopScreenShare}
+            renegotiate={renegotiate}
           />
         )}
       </div>

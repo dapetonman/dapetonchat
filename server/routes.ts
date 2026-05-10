@@ -39,14 +39,53 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     ws.on("message", (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
+        console.log("[WS Server] Received:", msg.type, msg);
 
         if (msg.type === "identify") {
           clients.set(ws, { username: msg.username });
           ws.send(JSON.stringify({ type: "voice_users", users: [...voiceRoom] }));
+
+          const allOnline = [...clients.entries()]
+            .filter(([cws]) => cws !== ws && cws.readyState === WebSocket.OPEN)
+            .map(([, info]) => info.username);
+          ws.send(JSON.stringify({ type: "presence-sync", users: allOnline }));
+
+          clients.forEach((info, clientWs) => {
+            if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ type: "presence", userId: msg.username, username: msg.username, online: true }));
+            }
+          });
+          ws.send(JSON.stringify({ type: "presence", userId: msg.username, username: msg.username, online: true }));
         }
 
         const username = clients.get(ws)?.username;
         if (!username) return;
+
+        if (msg.type === "typing" || msg.type === "presence" || msg.type === "initial-presence") {
+          const payload = { ...msg, userId: msg.userId || username };
+          const data = JSON.stringify(payload);
+          wss.clients.forEach((clientWs) => {
+            if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
+              console.log(`[WS Server] Broadcasting ${msg.type} to ${clients.get(clientWs)?.username}:`, payload);
+              clientWs.send(data);
+            }
+          });
+          if (msg.status === "stopped") {
+            const stoppedPayload = JSON.stringify({ type: "typing", chatId: msg.chatId, userId: msg.userId || username, username: msg.username || msg.userId, status: "stopped" });
+            wss.clients.forEach((clientWs) => {
+              if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(stoppedPayload);
+              }
+            });
+          }
+        }
+
+        if (msg.type === "request-presence-sync") {
+          const allOnline = [...clients.entries()]
+            .filter(([cws]) => cws.readyState === WebSocket.OPEN)
+            .map(([, info]) => info.username);
+          ws.send(JSON.stringify({ type: "presence-sync", users: allOnline }));
+        }
 
         if (msg.type === "voice_join") {
           if (voiceKicked.has(username)) return;
@@ -76,13 +115,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     ws.on("close", () => {
       const info = clients.get(ws);
+      const leftUsername = info?.username;
+      if (leftUsername) {
+        wss.clients.forEach((clientWs) => {
+          if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ type: "presence", userId: leftUsername, username: leftUsername, online: false }));
+          }
+        });
+      }
       if (info && voiceRoom.has(info.username)) {
         voiceRoom.delete(info.username);
         broadcastVoiceUsers();
-        const leftMsg = JSON.stringify({ type: "voice_peer_left", username: info.username });
         clients.forEach((_, clientWs) => {
           if (clientWs !== ws && clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(leftMsg);
+            clientWs.send(JSON.stringify({ type: "voice_peer_left", username: info.username }));
           }
         });
       }
@@ -106,6 +152,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   }
 
+  function broadcastUserListUpdate() {
+    console.log("[Broadcast] Sending REFRESH_USER_LIST to all clients");
+    const data = JSON.stringify({ type: "REFRESH_USER_LIST" });
+    clients.forEach((_, client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(data);
+        console.log("[Broadcast] Sent to client");
+      }
+    });
+  }
+
   app.post("/api/auth/register", async (req, res) => {
     try {
       const { username, password } = req.body ?? {};
@@ -113,6 +170,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const existing = await storage.getUserByUsername(username);
       if (existing) return res.status(409).json({ message: "Username already taken" });
       const user = await storage.createUser({ username, password });
+      console.log("[Register] User created:", user.username, "broadcasting refresh");
+      broadcastUserListUpdate();
       res.status(201).json(user);
     } catch (err) {
       console.error("Register error:", err);

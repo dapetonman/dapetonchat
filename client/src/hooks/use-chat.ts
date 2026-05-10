@@ -29,8 +29,14 @@ export function useSendMessage() {
   });
 }
 
+export interface UserInfo {
+  id: number;
+  username: string;
+  isOnline?: boolean;
+}
+
 export function useUsers() {
-  return useQuery<{ id: number; username: string }[]>({
+  return useQuery<UserInfo[]>({
     queryKey: ["/api/users"],
     queryFn: async () => {
       const res = await fetch("/api/users");
@@ -60,17 +66,47 @@ export function useChatWebSocket(username: string) {
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: "identify", username }));
+        ws.send(JSON.stringify({ type: "initial-presence", userId: username, username, online: true }));
+        ws.send(JSON.stringify({ type: "presence", userId: username, username, online: true }));
+        ws.send(JSON.stringify({ type: "request-presence-sync" }));
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log("DEBUG: Incoming WS", data.type, data);
+          if (data.type === "typing") {
+            console.log("RECEIVED TYPING:", data);
+          }
           if (data.type === "chat_message") {
             const msg: Message = data.payload;
             queryClient.setQueryData<Message[]>(["/api/messages", msg.chatId], (old) => {
               if (!old) return [msg];
               if (old.some((m) => m.id === msg.id)) return old;
               return [...old, msg];
+            });
+          }
+          if (data.type === "presence") {
+            console.log("DEBUG: Presence update:", data);
+            queryClient.setQueryData<UserInfo[]>(["/api/users"], (old) => {
+              if (!old) return old;
+              const userKey = data.userId || data.username;
+              return old.map((u) =>
+                (u.username === userKey || u.username === data.username)
+                  ? { ...u, username: userKey || u.username, isOnline: data.online }
+                  : u
+              );
+            });
+          }
+          if (data.type === "presence-sync") {
+            console.log("DEBUG: Presence sync:", data);
+            queryClient.setQueryData<UserInfo[]>(["/api/users"], (old) => {
+              if (!old) return old;
+              const syncedOnline = new Set(data.users as string[]);
+              return old.map((u) => ({
+                ...u,
+                isOnline: syncedOnline.has(u.username) ? true : u.isOnline,
+              }));
             });
           }
           if (data.type === "reload") {

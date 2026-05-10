@@ -78,6 +78,7 @@ export function useVoice(username: string) {
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
   const cameraVideoTrackRef = useRef<MediaStreamTrack | null>(null);
   const senderMapRef = useRef<Map<string, { audio?: RTCRtpSender; video?: RTCRtpSender; screen?: RTCRtpSender }>>(new Map());
+  const syncPeerTracksRef = useRef<((remoteUser: string) => void) | null>(null);
 
   const setRemoteStream = useCallback((remoteUser: string, stream: MediaStream | null) => {
     setRemoteStreams((prev) => {
@@ -133,6 +134,21 @@ export function useVoice(username: string) {
 
     senderMapRef.current.set(remoteUser, senders);
   }, []);
+
+  syncPeerTracksRef.current = syncPeerTracks;
+
+  const renegotiate = useCallback(() => {
+    sendWs({ type: "voice-renegotiate", username });
+    peersRef.current.forEach((pc, remoteUser) => {
+      if (pc.signalingState !== "stable") return;
+      pc.createOffer({ iceRestart: true, offerToReceiveAudio: true, offerToReceiveVideo: true }).then(async (offer) => {
+        const mungedSdp = forceH264(offer.sdp ?? "");
+        const mungedOffer = { type: offer.type, sdp: mungedSdp };
+        await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
+        sendWs({ type: "voice_signal", to: remoteUser, from: username, data: { offer: mungedOffer } });
+      }).catch(() => {});
+    });
+  }, [username]);
 
   const createPeer = useCallback(
     (remoteUser: string, initiator: boolean): RTCPeerConnection => {
@@ -198,6 +214,16 @@ export function useVoice(username: string) {
         }
       };
 
+      pc.onnegotiationneeded = async () => {
+        try {
+          const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+          const mungedSdp = forceH264(offer.sdp ?? "");
+          const mungedOffer = { type: offer.type, sdp: mungedSdp };
+          await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
+          sendWs({ type: "voice_signal", to: remoteUser, from: username, data: { offer: mungedOffer } });
+        } catch {}
+      };
+
       if (initiator) {
         pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true }).then(async (offer) => {
           const mungedSdp = forceH264(offer.sdp ?? "");
@@ -225,6 +251,20 @@ export function useVoice(username: string) {
       onWsMessage("voice_new_peer", ({ username: newUser }: { username: string }) => {
         if (!localStreamRef.current || newUser === username) return;
         createPeer(newUser, true);
+        const hasActiveStream = screenSharing || (cameraEnabled && cameraTrackRef.current);
+        if (hasActiveStream) {
+          setTimeout(() => {
+            const pc = peersRef.current.get(newUser);
+            if (pc) {
+              pc.createOffer({ iceRestart: true, offerToReceiveAudio: true, offerToReceiveVideo: true }).then(async (offer) => {
+                const mungedSdp = forceH264(offer.sdp ?? "");
+                const mungedOffer = { type: offer.type, sdp: mungedSdp };
+                await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
+                sendWs({ type: "voice_signal", to: newUser, from: username, data: { offer: mungedOffer } });
+              }).catch(() => {});
+            }
+          }, 500);
+        }
       })
     );
 
@@ -255,6 +295,21 @@ export function useVoice(username: string) {
     unsubs.push(
       onWsMessage("voice_peer_left", ({ username: leftUser }: { username: string }) => {
         cleanupPeer(leftUser);
+      })
+    );
+
+    unsubs.push(
+      onWsMessage("voice-renegotiate", ({ username: targetUser }: { username: string }) => {
+        if (targetUser === username || !localStreamRef.current) return;
+        const pc = peersRef.current.get(targetUser);
+        if (!pc) return;
+        if (pc.signalingState !== "stable") return;
+        pc.createOffer({ iceRestart: true, offerToReceiveAudio: true, offerToReceiveVideo: true }).then(async (offer) => {
+          const mungedSdp = forceH264(offer.sdp ?? "");
+          const mungedOffer = { type: offer.type, sdp: mungedSdp };
+          await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
+          sendWs({ type: "voice_signal", to: targetUser, from: username, data: { offer: mungedOffer } });
+        }).catch(() => {});
       })
     );
 
@@ -303,6 +358,7 @@ export function useVoice(username: string) {
               ...(stream.getAudioTracks()),
               screenTrack,
             ]));
+            renegotiate();
           } catch {
             // screen share cancelled — still joined voice
           }
@@ -311,7 +367,7 @@ export function useVoice(username: string) {
         setMicError("Could not access microphone. Please allow mic permission and try again.");
       }
     },
-    [syncPeerTracks]
+    [renegotiate, syncPeerTracks]
   );
 
   const leaveVoice = useCallback(() => {
@@ -355,11 +411,12 @@ export function useVoice(username: string) {
         peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
         setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
         setCameraEnabled(true);
+        renegotiate();
       } catch {
         setMicError("Could not access camera.");
       }
     }
-  }, [cameraEnabled, inVoice, syncPeerTracks]);
+  }, [cameraEnabled, inVoice, renegotiate, syncPeerTracks]);
 
   const shareScreen = useCallback(async () => {
     if (!inVoice) return;
@@ -389,10 +446,11 @@ export function useVoice(username: string) {
         ...(localStreamRef.current?.getAudioTracks() ?? []),
         screenTrack,
       ]));
+      renegotiate();
     } catch {
       // user cancelled or permission denied
     }
-  }, [cameraEnabled, inVoice, syncPeerTracks]);
+  }, [cameraEnabled, inVoice, renegotiate, syncPeerTracks]);
 
   const stopScreenShare = useCallback(() => {
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -403,7 +461,8 @@ export function useVoice(username: string) {
       ...(localStreamRef.current?.getAudioTracks() ?? []),
       ...(cameraTrackRef.current ? [cameraTrackRef.current] : []),
     ]));
-  }, [syncPeerTracks]);
+    renegotiate();
+  }, [renegotiate, syncPeerTracks]);
 
   return {
     voiceUsers,
@@ -413,11 +472,11 @@ export function useVoice(username: string) {
     micError,
     localStream,
     remoteStreams,
-    filePeers,
     joinVoice,
     leaveVoice,
     toggleCamera,
     shareScreen,
     stopScreenShare,
+    renegotiate,
   };
 }
