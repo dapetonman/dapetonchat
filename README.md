@@ -28,7 +28,9 @@ is this also because discord is banished from school wifi?
 
 dapetonputer v0.1 - may 3rd 2026, initial release - https://github.com/dapetonman/dapetonchat/releases/download/major-version-release/dapetonputer.v0.1.complete.build.cross-plat.zip
 
-dapetonputer v0.2 - TBA, Adds proper user system support and improves on front landing page. - (insert at a later time)
+dapetonputer v0.11 - may 9th 2026, ui updates - https://github.com/dapetonman/dapetonchat/releases/download/major-version-release-v0.11/dapetonputer.v0.11.complete.build.cross-plat.zip
+
+dapetonputer v0.2 - may 11th 2026, massive overhaul of ui - (insert here)
 
 # IMPORTANT INFO TO KNOW
 
