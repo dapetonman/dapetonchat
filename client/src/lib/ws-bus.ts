@@ -24,3 +24,7 @@ export function sendWs(msg: object) {
     _ws.send(JSON.stringify(msg));
   }
 }
+
+export function setWsConnected(connected: boolean) {
+  window.dispatchEvent(new CustomEvent("ws-status", { detail: { connected } }));
+}

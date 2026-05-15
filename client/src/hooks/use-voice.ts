@@ -318,56 +318,73 @@ export function useVoice(username: string) {
 
   const joinVoice = useCallback(
     async (withCamera: boolean, withScreen: boolean = false) => {
-      try {
-        const constraints: MediaStreamConstraints = {
-          audio: true,
-          video: withCamera ? VIDEO_CONSTRAINTS : false,
-        };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        localStreamRef.current = stream;
-        setLocalStream(stream);
-        setCameraEnabled(withCamera);
-        if (withCamera) {
-          stream.getVideoTracks().forEach((track) => {
-            track.contentHint = "motion";
-            cameraTrackRef.current = track;
-            cameraVideoTrackRef.current = track;
-          });
-        }
-        sendWs({ type: "voice_join" });
-        setInVoice(true);
-        setMicError(null);
+      let stream: MediaStream;
+      let cameraActuallyEnabled = withCamera;
 
-        if (withScreen) {
-          try {
-            const screenStream = await navigator.mediaDevices.getDisplayMedia(SCREEN_CONSTRAINTS);
-            const screenTrack = screenStream.getVideoTracks()[0];
-            screenStreamRef.current = screenStream;
-            setScreenSharing(true);
-            screenTrack.contentHint = "motion";
-            screenTrack.onended = () => {
-              screenStreamRef.current?.getTracks().forEach((t) => t.stop());
-              screenStreamRef.current = null;
-              setScreenSharing(false);
-              peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-              setLocalStream(new MediaStream([
-                ...(localStreamRef.current?.getAudioTracks() ?? []),
-              ]));
-            };
-            setLocalStream(new MediaStream([
-              ...(stream.getAudioTracks()),
-              screenTrack,
-            ]));
-            renegotiate();
-          } catch {
-            // screen share cancelled — still joined voice
+      if (withCamera) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: VIDEO_CONSTRAINTS });
+        } catch (err: any) {
+          const isDenied = err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError" || err?.name === "NotFoundError";
+          if (isDenied) {
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+              cameraActuallyEnabled = false;
+              setMicError("camera-denied");
+            } catch {
+              setMicError("Could not access microphone. Please allow mic permission and try again.");
+              return;
+            }
+          } else {
+            setMicError("Could not access microphone. Please allow mic permission and try again.");
+            return;
           }
         }
-      } catch {
-        setMicError("Could not access microphone. Please allow mic permission and try again.");
+      } else {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch {
+          setMicError("Could not access microphone. Please allow mic permission and try again.");
+          return;
+        }
+      }
+
+      localStreamRef.current = stream;
+      setLocalStream(stream);
+      setCameraEnabled(cameraActuallyEnabled);
+      if (cameraActuallyEnabled) {
+        stream.getVideoTracks().forEach((track) => {
+          track.contentHint = "motion";
+          cameraTrackRef.current = track;
+          cameraVideoTrackRef.current = track;
+        });
+      }
+      sendWs({ type: "voice_join" });
+      setInVoice(true);
+      if (micError !== "camera-denied") setMicError(null);
+
+      if (withScreen) {
+        try {
+          const screenStream = await navigator.mediaDevices.getDisplayMedia(SCREEN_CONSTRAINTS);
+          const screenTrack = screenStream.getVideoTracks()[0];
+          screenStreamRef.current = screenStream;
+          setScreenSharing(true);
+          screenTrack.contentHint = "motion";
+          screenTrack.onended = () => {
+            screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+            screenStreamRef.current = null;
+            setScreenSharing(false);
+            peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+            setLocalStream(new MediaStream([...(localStreamRef.current?.getAudioTracks() ?? [])]));
+          };
+          setLocalStream(new MediaStream([...(stream.getAudioTracks()), screenTrack]));
+          renegotiate();
+        } catch {
+          // screen share cancelled — still joined voice
+        }
       }
     },
-    [renegotiate, syncPeerTracks]
+    [renegotiate, syncPeerTracks, micError]
   );
 
   const leaveVoice = useCallback(() => {

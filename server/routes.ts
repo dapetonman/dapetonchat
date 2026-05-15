@@ -5,12 +5,49 @@ import multer from "multer";
 import { randomBytes } from "crypto";
 import { storage } from "./storage";
 import { WS_EVENTS, type WsMessage } from "@shared/schema";
+import type { LinkPreview } from "@shared/schema";
 
 const ADMIN_USERNAME = "dapetonman";
 const CLEANUP_MS = 60 * 60 * 1000;
+const EDIT_WINDOW_MS = 5 * 60 * 1000;
 
 const screenshotCache = new Map<string, { buffer: Buffer; contentType: string; originalName: string; size: number }>();
 const upload = multer({ storage: multer.memoryStorage() });
+
+const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/i;
+
+async function fetchLinkPreview(url: string): Promise<LinkPreview | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; dapetonchat/1.0; +https://dapetonchat.replit.app)" },
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const html = await res.text();
+    const getOg = (prop: string) => {
+      const m =
+        html.match(new RegExp(`<meta[^>]+property=["']og:${prop}["'][^>]+content=["']([^"']+)["']`, "i")) ||
+        html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:${prop}["']`, "i"));
+      return m?.[1]?.trim() ?? undefined;
+    };
+    const getMeta = (name: string) => {
+      const m =
+        html.match(new RegExp(`<meta[^>]+name=["']${name}["'][^>]+content=["']([^"']+)["']`, "i")) ||
+        html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${name}["']`, "i"));
+      return m?.[1]?.trim() ?? undefined;
+    };
+    const title = getOg("title") || html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
+    const description = getOg("description") || getMeta("description");
+    const image = getOg("image");
+    if (!title && !description && !image) return null;
+    return { url, title, description, image };
+  } catch {
+    return null;
+  }
+}
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
@@ -145,6 +182,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   }
 
+  function broadcastMessageUpdate(message: any, chatId: string) {
+    const data = JSON.stringify({ type: "message_update", payload: message });
+    clients.forEach((info, client) => {
+      if (client.readyState !== WebSocket.OPEN) return;
+      if (chatId === "general" || chatId.split("_").includes(info.username)) client.send(data);
+    });
+  }
+
+  function broadcastMessageDelete(messageId: number, chatId: string) {
+    const data = JSON.stringify({ type: "message_delete", payload: { messageId, chatId } });
+    clients.forEach((info, client) => {
+      if (client.readyState !== WebSocket.OPEN) return;
+      if (chatId === "general" || chatId.split("_").includes(info.username)) client.send(data);
+    });
+  }
+
+  function broadcastReactionUpdate(messageId: number, chatId: string, reactions: any[]) {
+    const data = JSON.stringify({ type: "reaction_update", payload: { messageId, chatId, reactions } });
+    clients.forEach((info, client) => {
+      if (client.readyState !== WebSocket.OPEN) return;
+      if (chatId === "general" || chatId.split("_").includes(info.username)) client.send(data);
+    });
+  }
+
   function broadcastReload() {
     const data = JSON.stringify({ type: "reload" });
     clients.forEach((_, client) => {
@@ -217,10 +278,100 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { username, content, chatId, replyToId } = req.body ?? {};
       if (!username || !content || !chatId) return res.status(400).json({ message: "username, content, and chatId are required" });
       const message = await storage.createMessage({ username, content, chatId, replyToId: replyToId ?? null });
-      broadcastToChat(message, chatId);
-      res.status(201).json(message);
+
+      // Fetch link preview asynchronously — broadcast updated message after fetch
+      const urlMatch = content.match(URL_REGEX);
+      if (urlMatch) {
+        fetchLinkPreview(urlMatch[0]).then(async (preview) => {
+          if (!preview) {
+            broadcastToChat(message, chatId);
+            return;
+          }
+          const updated = await storage.updateMessage(message.id, content, preview);
+          broadcastToChat(updated ?? message, chatId);
+        }).catch(() => {
+          broadcastToChat(message, chatId);
+        });
+        res.status(201).json(message);
+      } else {
+        broadcastToChat(message, chatId);
+        res.status(201).json(message);
+      }
     } catch (err) {
       console.error("Send message error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.patch("/api/messages/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { username, content } = req.body ?? {};
+      if (!username || !content) return res.status(400).json({ message: "username and content are required" });
+      const existing = await storage.getMessage(id);
+      if (!existing) return res.status(404).json({ message: "Message not found" });
+      const isAdmin = username === ADMIN_USERNAME;
+      const isOwner = existing.username === username;
+      const withinWindow = Date.now() - new Date(existing.createdAt).getTime() < EDIT_WINDOW_MS;
+      if (!isAdmin && (!isOwner || !withinWindow)) {
+        return res.status(403).json({ message: "Cannot edit this message" });
+      }
+
+      // Fetch new link preview if URL present
+      const urlMatch = content.match(URL_REGEX);
+      const preview = urlMatch ? await fetchLinkPreview(urlMatch[0]).catch(() => null) : null;
+      const updated = await storage.updateMessage(id, content, preview);
+      if (!updated) return res.status(404).json({ message: "Message not found" });
+      broadcastMessageUpdate(updated, updated.chatId);
+      res.json(updated);
+    } catch (err) {
+      console.error("Edit message error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.delete("/api/messages/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { username } = req.body ?? {};
+      if (!username) return res.status(400).json({ message: "username required" });
+      const existing = await storage.getMessage(id);
+      if (!existing) return res.status(404).json({ message: "Message not found" });
+      const isAdmin = username === ADMIN_USERNAME;
+      const isOwner = existing.username === username;
+      if (!isAdmin && !isOwner) return res.status(403).json({ message: "Cannot delete this message" });
+      const chatId = existing.chatId;
+      await storage.deleteMessage(id);
+      broadcastMessageDelete(id, chatId);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Delete single message error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/reactions", async (req, res) => {
+    try {
+      const chatId = (req.query.chatId as string) || "general";
+      const msgs = await storage.getMessages(chatId);
+      const messageIds = msgs.map((m) => m.id);
+      const reactions = await storage.getReactionsForMessages(messageIds);
+      res.json(reactions);
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/reactions", async (req, res) => {
+    try {
+      const { messageId, username, emoji } = req.body ?? {};
+      if (!messageId || !username || !emoji) return res.status(400).json({ message: "messageId, username, and emoji required" });
+      const msg = await storage.getMessage(messageId);
+      if (!msg) return res.status(404).json({ message: "Message not found" });
+      const updated = await storage.toggleReaction(messageId, username, emoji);
+      broadcastReactionUpdate(messageId, msg.chatId, updated);
+      res.json(updated);
+    } catch (err) {
       res.status(500).json({ message: "Internal server error" });
     }
   });
