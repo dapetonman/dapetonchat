@@ -16,6 +16,14 @@ const SCREEN_CONSTRAINTS: DisplayMediaStreamOptions = {
   audio: false,
 };
 
+const RECONNECT_TIMEOUT_MS = 10_000;
+
+const SCREEN_QUALITY_PRESETS: Record<string, MediaTrackConstraints> = {
+  "480p": { width: { ideal: 854 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+  "720p": { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+  "1080p": { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+};
+
 function forceH264(sdp: string): string {
   const lines = sdp.split("\r\n");
   let videoPayloads: string[] = [];
@@ -62,6 +70,23 @@ async function setVideoBandwidth(pc: RTCPeerConnection) {
   }
 }
 
+function isPolite(a: string, b: string): boolean {
+  return a.localeCompare(b) < 0;
+}
+
+function cleanupPeerConnection(pc: RTCPeerConnection): void {
+  pc.onicecandidate = null;
+  pc.ontrack = null;
+  pc.onconnectionstatechange = null;
+  pc.oniceconnectionstatechange = null;
+  pc.onnegotiationneeded = null;
+  pc.ondatachannel = null;
+  pc.onsignalingstatechange = null;
+  if (pc.connectionState !== "closed") {
+    pc.close();
+  }
+}
+
 export function useVoice(username: string) {
   const [voiceUsers, setVoiceUsers] = useState<string[]>([]);
   const [inVoice, setInVoice] = useState(false);
@@ -71,6 +96,8 @@ export function useVoice(username: string) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [filePeers, setFilePeers] = useState<Map<string, RTCDataChannel>>(new Map());
+  const [desktopAudioEnabled, setDesktopAudioEnabled] = useState(false);
+  const [screenQuality, setScreenQualityState] = useState("720p");
 
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -78,7 +105,12 @@ export function useVoice(username: string) {
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
   const cameraVideoTrackRef = useRef<MediaStreamTrack | null>(null);
   const senderMapRef = useRef<Map<string, { audio?: RTCRtpSender; video?: RTCRtpSender; screen?: RTCRtpSender }>>(new Map());
+  const candidateQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const reconnectTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const makingOfferRef = useRef<Map<string, boolean>>(new Map());
   const syncPeerTracksRef = useRef<((remoteUser: string) => void) | null>(null);
+  const desktopAudioEnabledRef = useRef(false);
+  const screenQualityRef = useRef("720p");
 
   const setRemoteStream = useCallback((remoteUser: string, stream: MediaStream | null) => {
     setRemoteStreams((prev) => {
@@ -88,19 +120,6 @@ export function useVoice(username: string) {
       return next;
     });
   }, []);
-
-  const cleanupPeer = useCallback(
-    (remoteUser: string) => {
-      const pc = peersRef.current.get(remoteUser);
-      if (pc) {
-        pc.close();
-        peersRef.current.delete(remoteUser);
-      }
-      senderMapRef.current.delete(remoteUser);
-      setRemoteStream(remoteUser, null);
-    },
-    [setRemoteStream]
-  );
 
   const syncPeerTracks = useCallback((remoteUser: string) => {
     const pc = peersRef.current.get(remoteUser);
@@ -118,11 +137,6 @@ export function useVoice(username: string) {
       senders.video = pc.addTrack(cameraTrack, localStreamRef.current!);
     }
 
-    if (!cameraTrack?.enabled && senders.video) {
-      pc.removeTrack(senders.video);
-      delete senders.video;
-    }
-
     if (screenTrack && !senders.screen) {
       senders.screen = pc.addTrack(screenTrack, screenStreamRef.current!);
     }
@@ -137,30 +151,65 @@ export function useVoice(username: string) {
 
   syncPeerTracksRef.current = syncPeerTracks;
 
-  const renegotiate = useCallback(() => {
-    sendWs({ type: "voice-renegotiate", username });
-    peersRef.current.forEach((pc, remoteUser) => {
-      if (pc.signalingState !== "stable") return;
-      pc.createOffer({ iceRestart: true, offerToReceiveAudio: true, offerToReceiveVideo: true }).then(async (offer) => {
+  const attemptIceRestart = useCallback((remoteUser: string) => {
+    const pc = peersRef.current.get(remoteUser);
+    if (!pc || pc.connectionState === "closed" || pc.signalingState !== "stable") return;
+    pc.createOffer({ iceRestart: true, offerToReceiveAudio: true, offerToReceiveVideo: true })
+      .then(async (offer) => {
+        if (pc.signalingState !== "stable") return;
         const mungedSdp = forceH264(offer.sdp ?? "");
         const mungedOffer = { type: offer.type, sdp: mungedSdp };
         await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
         sendWs({ type: "voice_signal", to: remoteUser, from: username, data: { offer: mungedOffer } });
-      }).catch(() => {});
-    });
+      })
+      .catch(() => {});
   }, [username]);
+
+  const restoreMicAudio = useCallback(() => {
+    const micTrack = localStreamRef.current?.getAudioTracks()[0];
+    if (!micTrack) return;
+    peersRef.current.forEach((pc) => {
+      const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
+      if (audioSender && audioSender.track !== micTrack) {
+        audioSender.replaceTrack(micTrack).catch(() => {});
+      }
+    });
+  }, []);
+
+  const cleanupPeer = useCallback(
+    (remoteUser: string) => {
+      const timer = reconnectTimersRef.current.get(remoteUser);
+      if (timer) {
+        clearTimeout(timer);
+        reconnectTimersRef.current.delete(remoteUser);
+      }
+      candidateQueueRef.current.delete(remoteUser);
+      makingOfferRef.current.delete(remoteUser);
+      const pc = peersRef.current.get(remoteUser);
+      if (pc) {
+        cleanupPeerConnection(pc);
+        peersRef.current.delete(remoteUser);
+      }
+      senderMapRef.current.delete(remoteUser);
+      setRemoteStream(remoteUser, null);
+    },
+    [setRemoteStream]
+  );
 
   const createPeer = useCallback(
     (remoteUser: string, initiator: boolean): RTCPeerConnection => {
       const existing = peersRef.current.get(remoteUser);
       if (existing) {
-        existing.close();
+        cleanupPeerConnection(existing);
         peersRef.current.delete(remoteUser);
       }
 
       const pc = new RTCPeerConnection(STUN_CONFIG);
+      const polite = isPolite(username, remoteUser);
+
       peersRef.current.set(remoteUser, pc);
       senderMapRef.current.set(remoteUser, {});
+      candidateQueueRef.current.set(remoteUser, []);
       syncPeerTracks(remoteUser);
 
       const fileChannel = pc.createDataChannel("file");
@@ -208,20 +257,78 @@ export function useVoice(username: string) {
         };
       };
 
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") {
-          setVideoBandwidth(pc);
-        }
-      };
-
       pc.onnegotiationneeded = async () => {
+        makingOfferRef.current.set(remoteUser, true);
         try {
+          if (pc.signalingState !== "stable") return;
           const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+          if (pc.signalingState !== "stable") return;
           const mungedSdp = forceH264(offer.sdp ?? "");
           const mungedOffer = { type: offer.type, sdp: mungedSdp };
           await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
           sendWs({ type: "voice_signal", to: remoteUser, from: username, data: { offer: mungedOffer } });
-        } catch {}
+        } catch {} finally {
+          makingOfferRef.current.delete(remoteUser);
+        }
+      };
+
+      pc.onsignalingstatechange = () => {
+        if (pc.signalingState === "stable") {
+          const queue = candidateQueueRef.current.get(remoteUser);
+          if (queue) {
+            while (queue.length > 0) {
+              const c = queue.shift()!;
+              pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+            }
+          }
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === "failed") {
+          attemptIceRestart(remoteUser);
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        switch (state) {
+          case "connected": {
+            const timer = reconnectTimersRef.current.get(remoteUser);
+            if (timer) {
+              clearTimeout(timer);
+              reconnectTimersRef.current.delete(remoteUser);
+            }
+            setVideoBandwidth(pc);
+            break;
+          }
+          case "disconnected": {
+            if (!reconnectTimersRef.current.has(remoteUser)) {
+              reconnectTimersRef.current.set(
+                remoteUser,
+                setTimeout(() => {
+                  reconnectTimersRef.current.delete(remoteUser);
+                  if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+                    attemptIceRestart(remoteUser);
+                  }
+                }, RECONNECT_TIMEOUT_MS)
+              );
+            }
+            break;
+          }
+          case "failed": {
+            attemptIceRestart(remoteUser);
+            break;
+          }
+          case "closed": {
+            const timer = reconnectTimersRef.current.get(remoteUser);
+            if (timer) {
+              clearTimeout(timer);
+              reconnectTimersRef.current.delete(remoteUser);
+            }
+            break;
+          }
+        }
       };
 
       if (initiator) {
@@ -230,12 +337,12 @@ export function useVoice(username: string) {
           const mungedOffer = { type: offer.type, sdp: mungedSdp };
           await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
           sendWs({ type: "voice_signal", to: remoteUser, from: username, data: { offer: mungedOffer } });
-        });
+        }).catch(() => {});
       }
 
       return pc;
     },
-    [username, setRemoteStream, syncPeerTracks]
+    [username, setRemoteStream, syncPeerTracks, attemptIceRestart]
   );
 
   useEffect(() => {
@@ -251,20 +358,6 @@ export function useVoice(username: string) {
       onWsMessage("voice_new_peer", ({ username: newUser }: { username: string }) => {
         if (!localStreamRef.current || newUser === username) return;
         createPeer(newUser, true);
-        const hasActiveStream = screenSharing || (cameraEnabled && cameraTrackRef.current);
-        if (hasActiveStream) {
-          setTimeout(() => {
-            const pc = peersRef.current.get(newUser);
-            if (pc) {
-              pc.createOffer({ iceRestart: true, offerToReceiveAudio: true, offerToReceiveVideo: true }).then(async (offer) => {
-                const mungedSdp = forceH264(offer.sdp ?? "");
-                const mungedOffer = { type: offer.type, sdp: mungedSdp };
-                await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
-                sendWs({ type: "voice_signal", to: newUser, from: username, data: { offer: mungedOffer } });
-              }).catch(() => {});
-            }
-          }, 500);
-        }
       })
     );
 
@@ -273,21 +366,43 @@ export function useVoice(username: string) {
         if (from === username || !localStreamRef.current) return;
 
         let pc = peersRef.current.get(from);
+        const polite = isPolite(username, from);
 
         if (data.offer) {
-          if (!pc) pc = createPeer(from, false);
-          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-          const answer = await pc.createAnswer();
-          const mungedSdp = forceH264(answer.sdp ?? "");
-          const mungedAnswer = { type: answer.type, sdp: mungedSdp };
-          await pc.setLocalDescription(mungedAnswer as RTCSessionDescriptionInit);
-          sendWs({ type: "voice_signal", to: from, from: username, data: { answer: mungedAnswer } });
+          if (!pc) {
+            pc = createPeer(from, false);
+          }
+
+          if (pc.signalingState === "stable") {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await pc.createAnswer();
+            const mungedSdp = forceH264(answer.sdp ?? "");
+            const mungedAnswer = { type: answer.type, sdp: mungedSdp };
+            await pc.setLocalDescription(mungedAnswer as RTCSessionDescriptionInit);
+            sendWs({ type: "voice_signal", to: from, from: username, data: { answer: mungedAnswer } });
+          } else if (pc.signalingState === "have-local-offer") {
+            if (polite) {
+              await pc.setLocalDescription({ type: "rollback" });
+              await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+              const answer = await pc.createAnswer();
+              const mungedSdp = forceH264(answer.sdp ?? "");
+              const mungedAnswer = { type: answer.type, sdp: mungedSdp };
+              await pc.setLocalDescription(mungedAnswer as RTCSessionDescriptionInit);
+              sendWs({ type: "voice_signal", to: from, from: username, data: { answer: mungedAnswer } });
+            }
+          }
         } else if (data.answer) {
-          await pc?.setRemoteDescription(new RTCSessionDescription(data.answer));
+          if (pc && pc.signalingState === "have-local-offer") {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          }
         } else if (data.candidate) {
-          try {
-            await pc?.addIceCandidate(new RTCIceCandidate(data.candidate));
-          } catch {}
+          if (!pc) return;
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
+          } else {
+            const queue = candidateQueueRef.current.get(from);
+            if (queue) queue.push(data.candidate);
+          }
         }
       })
     );
@@ -301,15 +416,7 @@ export function useVoice(username: string) {
     unsubs.push(
       onWsMessage("voice-renegotiate", ({ username: targetUser }: { username: string }) => {
         if (targetUser === username || !localStreamRef.current) return;
-        const pc = peersRef.current.get(targetUser);
-        if (!pc) return;
-        if (pc.signalingState !== "stable") return;
-        pc.createOffer({ iceRestart: true, offerToReceiveAudio: true, offerToReceiveVideo: true }).then(async (offer) => {
-          const mungedSdp = forceH264(offer.sdp ?? "");
-          const mungedOffer = { type: offer.type, sdp: mungedSdp };
-          await pc.setLocalDescription(mungedOffer as RTCSessionDescriptionInit);
-          sendWs({ type: "voice_signal", to: targetUser, from: username, data: { offer: mungedOffer } });
-        }).catch(() => {});
+        syncPeerTracksRef.current?.(targetUser);
       })
     );
 
@@ -371,23 +478,29 @@ export function useVoice(username: string) {
           setScreenSharing(true);
           screenTrack.contentHint = "motion";
           screenTrack.onended = () => {
+            const videoTracks = localStreamRef.current?.getVideoTracks() ?? [];
+            videoTracks.forEach((t) => localStreamRef.current?.removeTrack(t));
             screenStreamRef.current?.getTracks().forEach((t) => t.stop());
             screenStreamRef.current = null;
             setScreenSharing(false);
             peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-            setLocalStream(new MediaStream([...(localStreamRef.current?.getAudioTracks() ?? [])]));
+            setLocalStream(localStreamRef.current);
           };
-          setLocalStream(new MediaStream([...(stream.getAudioTracks()), screenTrack]));
-          renegotiate();
+          localStreamRef.current.addTrack(screenTrack);
+          setLocalStream(localStreamRef.current);
+          peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
         } catch {
-          // screen share cancelled — still joined voice
         }
       }
     },
-    [renegotiate, syncPeerTracks, micError]
+    [syncPeerTracks, micError]
   );
 
   const leaveVoice = useCallback(() => {
+    reconnectTimersRef.current.forEach((timer) => clearTimeout(timer));
+    reconnectTimersRef.current.clear();
+    candidateQueueRef.current.clear();
+    makingOfferRef.current.clear();
     peersRef.current.forEach((_, remoteUser) => cleanupPeer(remoteUser));
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -402,20 +515,31 @@ export function useVoice(username: string) {
     setInVoice(false);
     setCameraEnabled(false);
     setScreenSharing(false);
+    setDesktopAudioEnabled(false);
+    desktopAudioEnabledRef.current = false;
+    setScreenQualityState("720p");
+    screenQualityRef.current = "720p";
   }, [cleanupPeer]);
 
   const toggleCamera = useCallback(async () => {
     if (!localStreamRef.current || !inVoice) return;
 
     if (cameraEnabled) {
-      cameraVideoTrackRef.current?.stop();
-      cameraVideoTrackRef.current = null;
       cameraTrackRef.current = null;
-      peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-      setLocalStream(new MediaStream([
-        ...localStreamRef.current.getAudioTracks(),
-        ...(screenStreamRef.current?.getVideoTracks() ?? []),
-      ]));
+      const oldTrack = cameraVideoTrackRef.current;
+      cameraVideoTrackRef.current = null;
+
+      peersRef.current.forEach((pc, remoteUser) => {
+        const senders = senderMapRef.current.get(remoteUser);
+        if (senders?.video) {
+          senders.video.replaceTrack(null).catch(() => {});
+        }
+      });
+
+      if (oldTrack) {
+        localStreamRef.current.removeTrack(oldTrack);
+        oldTrack.stop();
+      }
       setCameraEnabled(false);
     } else {
       try {
@@ -424,24 +548,43 @@ export function useVoice(username: string) {
         videoTrack.contentHint = "motion";
         cameraVideoTrackRef.current = videoTrack;
         cameraTrackRef.current = videoTrack;
+
         localStreamRef.current.addTrack(videoTrack);
-        peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+
+        peersRef.current.forEach((pc, remoteUser) => {
+          const senders = senderMapRef.current.get(remoteUser);
+          if (senders?.video) {
+            senders.video.replaceTrack(videoTrack).catch(() => {});
+          } else {
+            const sender = pc.addTrack(videoTrack, localStreamRef.current!);
+            if (senders) senders.video = sender;
+          }
+        });
+
         setCameraEnabled(true);
-        renegotiate();
       } catch {
         setMicError("Could not access camera.");
       }
     }
-  }, [cameraEnabled, inVoice, renegotiate, syncPeerTracks]);
+  }, [cameraEnabled, inVoice]);
 
   const shareScreen = useCallback(async () => {
     if (!inVoice) return;
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia(SCREEN_CONSTRAINTS);
+      const constraints: DisplayMediaStreamOptions = {
+        video: SCREEN_QUALITY_PRESETS[screenQualityRef.current] ?? SCREEN_CONSTRAINTS.video,
+        audio: true,
+      };
+      const screenStream = await navigator.mediaDevices.getDisplayMedia(constraints);
       const screenTrack = screenStream.getVideoTracks()[0];
+      const desktopAudioTrack = screenStream.getAudioTracks()[0] ?? null;
+
       screenStreamRef.current = screenStream;
       setScreenSharing(true);
+      const hasAudio = !!desktopAudioTrack;
+      setDesktopAudioEnabled(hasAudio);
+      desktopAudioEnabledRef.current = hasAudio;
+
       if (cameraEnabled) {
         cameraVideoTrackRef.current?.stop();
         cameraVideoTrackRef.current = null;
@@ -450,36 +593,91 @@ export function useVoice(username: string) {
       }
       screenTrack.contentHint = "motion";
       screenTrack.onended = () => {
+        const videoTracks = localStreamRef.current?.getVideoTracks() ?? [];
+        videoTracks.forEach((t) => localStreamRef.current?.removeTrack(t));
         screenStreamRef.current?.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
         setScreenSharing(false);
+        setDesktopAudioEnabled(false);
+        desktopAudioEnabledRef.current = false;
+        restoreMicAudio();
         peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-        setLocalStream(new MediaStream([
-          ...(localStreamRef.current?.getAudioTracks() ?? []),
-        ]));
+        setLocalStream(localStreamRef.current);
       };
+
+      if (desktopAudioTrack) {
+        desktopAudioTrack.contentHint = "music";
+      }
+
       peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-      setLocalStream(new MediaStream([
-        ...(localStreamRef.current?.getAudioTracks() ?? []),
-        screenTrack,
-      ]));
-      renegotiate();
+
+      if (desktopAudioTrack) {
+        peersRef.current.forEach((pc) => {
+          const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
+          if (audioSender) {
+            audioSender.replaceTrack(desktopAudioTrack).catch(() => {});
+          }
+        });
+      }
+
+      localStreamRef.current!.addTrack(screenTrack);
+      setLocalStream(localStreamRef.current);
     } catch {
-      // user cancelled or permission denied
     }
-  }, [cameraEnabled, inVoice, renegotiate, syncPeerTracks]);
+  }, [cameraEnabled, inVoice, syncPeerTracks, restoreMicAudio]);
 
   const stopScreenShare = useCallback(() => {
+    const videoTracks = localStreamRef.current?.getVideoTracks() ?? [];
+    videoTracks.forEach((t) => localStreamRef.current?.removeTrack(t));
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     screenStreamRef.current = null;
     setScreenSharing(false);
+    setDesktopAudioEnabled(false);
+    desktopAudioEnabledRef.current = false;
+    restoreMicAudio();
+    if (cameraTrackRef.current) {
+      localStreamRef.current?.addTrack(cameraTrackRef.current);
+    }
+    setLocalStream(localStreamRef.current);
     peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-    setLocalStream(new MediaStream([
-      ...(localStreamRef.current?.getAudioTracks() ?? []),
-      ...(cameraTrackRef.current ? [cameraTrackRef.current] : []),
-    ]));
-    renegotiate();
-  }, [renegotiate, syncPeerTracks]);
+  }, [syncPeerTracks, restoreMicAudio]);
+
+  const setScreenQuality = useCallback(async (quality: string) => {
+    screenQualityRef.current = quality;
+    setScreenQualityState(quality);
+    const track = screenStreamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    const constraints = SCREEN_QUALITY_PRESETS[quality];
+    if (!constraints) return;
+    try {
+      await track.applyConstraints(constraints);
+    } catch {
+    }
+  }, []);
+
+  const toggleDesktopAudio = useCallback(() => {
+    const newState = !desktopAudioEnabledRef.current;
+    desktopAudioEnabledRef.current = newState;
+    setDesktopAudioEnabled(newState);
+
+    const desktopAudioTrack = screenStreamRef.current?.getAudioTracks()[0];
+    const micTrack = localStreamRef.current?.getAudioTracks()[0];
+
+    peersRef.current.forEach((pc) => {
+      const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
+      if (!audioSender) return;
+      if (newState && desktopAudioTrack) {
+        audioSender.replaceTrack(desktopAudioTrack).catch(() => {});
+      } else if (!newState && micTrack) {
+        audioSender.replaceTrack(micTrack).catch(() => {});
+      }
+    });
+  }, []);
+
+  const renegotiate = useCallback(() => {
+    sendWs({ type: "voice-renegotiate", username });
+    peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+  }, [username]);
 
   return {
     voiceUsers,
@@ -489,11 +687,15 @@ export function useVoice(username: string) {
     micError,
     localStream,
     remoteStreams,
+    desktopAudioEnabled,
+    screenQuality,
     joinVoice,
     leaveVoice,
     toggleCamera,
     shareScreen,
     stopScreenShare,
+    setScreenQuality,
+    toggleDesktopAudio,
     renegotiate,
   };
 }

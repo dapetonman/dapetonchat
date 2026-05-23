@@ -1,0 +1,31 @@
+[
+  {
+    "messageId": 3,
+    "emoji": "😢",
+    "usernames": [
+      "dapetonman"
+    ]
+  },
+  {
+    "messageId": 3,
+    "emoji": "😂",
+    "usernames": [
+      "dapetonman"
+    ]
+  },
+  {
+    "messageId": 1,
+    "emoji": "🔥",
+    "usernames": [
+      "dapetonman",
+      "test"
+    ]
+  },
+  {
+    "messageId": 2,
+    "emoji": "🔥",
+    "usernames": [
+      "dapetonman"
+    ]
+  }
+]

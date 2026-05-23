@@ -446,13 +446,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.get("/view/:id", (req, res) => {
-    const entry = screenshotCache.get(req.params.id);
-    if (!entry) return res.status(404).send("Image not found or expired");
-    res.setHeader("Content-Type", entry.contentType);
-    res.setHeader("Cache-Control", "no-store");
-    res.send(entry.buffer);
+app.get("/view/:id", (req, res) => {
+  const entry = screenshotCache.get(req.params.id);
+  if (!entry) return res.status(404).send("Image not found or expired");
+
+  const totalSize = entry.size;
+  const range = req.headers.range;
+
+  // 1. Support HTML5 multi-media timeline seeking / chunk streaming
+  if (range) {
+    const parts = range.replace(/bytes=/, "").split("-");
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+
+    // Guard against malformed or out-of-bounds headers
+    if (start >= totalSize || end >= totalSize || start > end) {
+      res.setHeader("Content-Range", `bytes */${totalSize}`);
+      return res.status(416).send("Requested Range Not Satisfiable");
+    }
+
+    const chunkSize = (end - start) + 1;
+    // Slice only the requested chunk out of your memory buffer
+    const chunk = entry.buffer.subarray(start, end + 1);
+
+    res.writeHead(206, {
+      "Content-Range": `bytes ${start}-${end}/${totalSize}`,
+      "Accept-Ranges": "bytes",
+      "Content-Length": chunkSize,
+      "Content-Type": entry.contentType,
+    });
+
+    return res.end(chunk);
+  } 
+  
+  // 2. Regular initial fallback delivery (Used for Images and regular file downloads)
+  res.writeHead(200, {
+    "Content-Length": totalSize,
+    "Content-Type": entry.contentType, // CRITICAL: Tells the browser it's an image/audio/etc.
+    "Accept-Ranges": "bytes",           // Tells the audio player it's allowed to seek next time
   });
+  return res.end(entry.buffer);
+});
 
   return httpServer;
 }
