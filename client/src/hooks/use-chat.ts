@@ -196,6 +196,11 @@ export function useChatWebSocket(username: string) {
               }));
             });
           }
+          if (data.type === "identify_rejected") {
+            localStorage.removeItem("chat_session");
+            ws.close();
+            window.location.reload();
+          }
           if (data.type === "reload") {
             window.location.reload();
           }

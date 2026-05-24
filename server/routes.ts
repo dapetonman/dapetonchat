@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import multer from "multer";
@@ -15,6 +15,23 @@ const screenshotCache = new Map<string, { buffer: Buffer; contentType: string; o
 const upload = multer({ storage: multer.memoryStorage() });
 
 const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/i;
+
+async function requireValidSession(req: Request, res: Response, next: NextFunction) {
+  const qUsername = req.query?.username;
+  const username: string | undefined = req.body?.username || (typeof qUsername === "string" ? qUsername : undefined);
+  if (username) {
+    try {
+      const user = await storage.getUserByUsername(username);
+      if (!user) {
+        res.clearCookie("chat_session");
+        return res.status(401).json({ code: "SESSION_EXPIRED", message: "Session expired" });
+      }
+    } catch {
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  }
+  next();
+}
 
 async function fetchLinkPreview(url: string): Promise<LinkPreview | null> {
   try {
@@ -73,12 +90,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }
 
   wss.on("connection", (ws) => {
-    ws.on("message", (raw) => {
+    ws.on("message", async (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
         console.log("[WS Server] Received:", msg.type, msg);
 
         if (msg.type === "identify") {
+          const user = await storage.getUserByUsername(msg.username);
+          if (!user) {
+            ws.send(JSON.stringify({ type: "identify_rejected" }));
+            return;
+          }
           clients.set(ws, { username: msg.username });
           ws.send(JSON.stringify({ type: "voice_users", users: [...voiceRoom] }));
 
@@ -273,7 +295,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/messages", async (req, res) => {
+  app.post("/api/messages", requireValidSession, async (req, res) => {
     try {
       const { username, content, chatId, replyToId } = req.body ?? {};
       if (!username || !content || !chatId) return res.status(400).json({ message: "username, content, and chatId are required" });
@@ -303,9 +325,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.patch("/api/messages/:id", async (req, res) => {
+  app.patch("/api/messages/:id", requireValidSession, async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = parseInt(req.params.id as string);
       const { username, content } = req.body ?? {};
       if (!username || !content) return res.status(400).json({ message: "username and content are required" });
       const existing = await storage.getMessage(id);
@@ -330,9 +352,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.delete("/api/messages/:id", async (req, res) => {
+  app.delete("/api/messages/:id", requireValidSession, async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = parseInt(req.params.id as string);
       const { username } = req.body ?? {};
       if (!username) return res.status(400).json({ message: "username required" });
       const existing = await storage.getMessage(id);
@@ -362,7 +384,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/reactions", async (req, res) => {
+  app.post("/api/reactions", requireValidSession, async (req, res) => {
     try {
       const { messageId, username, emoji } = req.body ?? {};
       if (!messageId || !username || !emoji) return res.status(400).json({ message: "messageId, username, and emoji required" });
@@ -376,7 +398,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.delete("/api/messages", async (req, res) => {
+  app.delete("/api/messages", requireValidSession, async (req, res) => {
     try {
       const { username } = req.body ?? {};
       if (username !== ADMIN_USERNAME) return res.status(403).json({ message: "Forbidden" });
@@ -389,7 +411,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.delete("/api/users", async (req, res) => {
+  app.delete("/api/users", requireValidSession, async (req, res) => {
     try {
       const { username } = req.body ?? {};
       if (username !== ADMIN_USERNAME) return res.status(403).json({ message: "Forbidden" });
@@ -402,7 +424,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/voice/kick-all", async (req, res) => {
+  app.post("/api/voice/kick-all", requireValidSession, async (req, res) => {
     try {
       const { username } = req.body ?? {};
       if (username !== ADMIN_USERNAME) return res.status(403).json({ message: "Forbidden" });
@@ -421,7 +443,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/upload", upload.single("image"), async (req, res) => {
+  app.post("/upload", upload.single("image"), requireValidSession, async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ message: "No file provided" });
       const { username, chatId } = req.body ?? {};
