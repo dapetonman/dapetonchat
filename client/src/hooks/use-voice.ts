@@ -608,6 +608,11 @@ export function useVoice(username: string) {
 
       if (desktopAudioTrack) {
         desktopAudioTrack.contentHint = "music";
+        desktopAudioTrack.onended = () => {
+          audioMixerRef.current?.removeTrack("desktop");
+          setDesktopAudioEnabled(false);
+          desktopAudioEnabledRef.current = false;
+        };
         audioMixerRef.current?.addTrack("desktop", desktopAudioTrack);
       }
 
