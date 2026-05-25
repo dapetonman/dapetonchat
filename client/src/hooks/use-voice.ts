@@ -140,13 +140,9 @@ export function useVoice(username: string) {
       senders.video = pc.addTrack(cameraTrack, localStreamRef.current!);
     }
 
-    if (screenTrack && !senders.screen) {
-      senders.screen = pc.addTrack(screenTrack, screenStreamRef.current!);
-    }
-
-    if (!screenTrack && senders.screen) {
-      pc.removeTrack(senders.screen);
-      delete senders.screen;
+    // Pre-allocated screen sender uses replaceTrack (no renegotiation)
+    if (senders.screen && screenTrack !== senders.screen.track) {
+      senders.screen.replaceTrack(screenTrack).catch(() => {});
     }
 
     senderMapRef.current.set(remoteUser, senders);
@@ -202,6 +198,17 @@ export function useVoice(username: string) {
       peersRef.current.set(remoteUser, pc);
       senderMapRef.current.set(remoteUser, {});
       candidateQueueRef.current.set(remoteUser, []);
+
+      // Pre-allocate a screen video transceiver so that starting/stopping
+      // screen share only needs replaceTrack() and never triggers
+      // renegotiation (which can disrupt the audio sender).
+      const screenTransceiver = pc.addTransceiver("video", { direction: "sendonly" });
+      {
+        const s = senderMapRef.current.get(remoteUser) ?? {};
+        s.screen = screenTransceiver.sender;
+        senderMapRef.current.set(remoteUser, s);
+      }
+
       syncPeerTracks(remoteUser);
 
       const fileChannel = pc.createDataChannel("file");
@@ -227,7 +234,20 @@ export function useVoice(username: string) {
       };
 
       pc.ontrack = (e) => {
-        if (e.streams[0]) setRemoteStream(remoteUser, e.streams[0]);
+        if (e.streams[0]) {
+          setRemoteStreams((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(remoteUser);
+            if (existing && existing !== e.streams[0]) {
+              for (const track of e.streams[0].getTracks()) {
+                existing.addTrack(track);
+              }
+            } else {
+              next.set(remoteUser, e.streams[0]);
+            }
+            return next;
+          });
+        }
       };
 
       pc.ondatachannel = (event) => {
@@ -467,19 +487,6 @@ export function useVoice(username: string) {
         });
       }
 
-      // One-time redirect: re-point every existing peer's audio sender to the
-      // mixer's stable output track so that subsequent mixer changes (addTrack /
-      // removeTrack) flow through without calling replaceTrack again.
-      const mixerAudioTrack = mixer.outputStream.getAudioTracks()[0];
-      if (mixerAudioTrack) {
-        peersRef.current.forEach((pc) => {
-          const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
-          if (audioSender && audioSender.track !== mixerAudioTrack) {
-            audioSender.replaceTrack(mixerAudioTrack).catch(() => {});
-          }
-        });
-      }
-
       sendWs({ type: "voice_join" });
       setInVoice(true);
       if (micError !== "camera-denied") setMicError(null);
@@ -614,10 +621,13 @@ export function useVoice(username: string) {
         screenStreamRef.current?.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
         audioMixerRef.current?.removeTrack("desktop");
+        peersRef.current.forEach((_, remoteUser) => {
+          const s = senderMapRef.current.get(remoteUser);
+          s?.screen?.replaceTrack(null).catch(() => {});
+        });
         setScreenSharing(false);
         setDesktopAudioEnabled(false);
         desktopAudioEnabledRef.current = false;
-        peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
         setLocalStream(localStreamRef.current);
       };
 
@@ -631,13 +641,17 @@ export function useVoice(username: string) {
         audioMixerRef.current?.addTrack("desktop", desktopAudioTrack);
       }
 
-      peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
+      // Set the screen track on the pre-allocated sender (no renegotiation)
+      peersRef.current.forEach((_, remoteUser) => {
+        const s = senderMapRef.current.get(remoteUser);
+        s?.screen?.replaceTrack(screenTrack).catch(() => {});
+      });
 
       localStreamRef.current!.addTrack(screenTrack);
       setLocalStream(localStreamRef.current);
     } catch {
     }
-  }, [cameraEnabled, inVoice, syncPeerTracks]);
+  }, [cameraEnabled, inVoice]);
 
   const stopScreenShare = useCallback(() => {
     const videoTracks = localStreamRef.current?.getVideoTracks() ?? [];
@@ -652,8 +666,11 @@ export function useVoice(username: string) {
       localStreamRef.current?.addTrack(cameraTrackRef.current);
     }
     setLocalStream(localStreamRef.current);
-    peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-  }, [syncPeerTracks]);
+    peersRef.current.forEach((_, remoteUser) => {
+      const s = senderMapRef.current.get(remoteUser);
+      s?.screen?.replaceTrack(null).catch(() => {});
+    });
+  }, []);
 
   const setScreenQuality = useCallback(async (quality: string) => {
     screenQualityRef.current = quality;
