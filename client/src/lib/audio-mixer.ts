@@ -46,6 +46,10 @@ export class AudioMixer {
     this.sources.delete(label);
   }
 
+  get outputStream(): MediaStream {
+    return this.destination.stream;
+  }
+
   getMixedStream(): MediaStream {
     return this.destination.stream;
   }

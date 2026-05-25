@@ -127,12 +127,13 @@ export function useVoice(username: string) {
     const pc = peersRef.current.get(remoteUser);
     if (!pc) return;
     const senders = senderMapRef.current.get(remoteUser) ?? {};
-    const audioTrack = localStreamRef.current?.getAudioTracks()[0] ?? null;
+    const mixer = audioMixerRef.current;
+    const audioTrack = mixer?.outputStream.getAudioTracks()[0] ?? null;
     const cameraTrack = cameraTrackRef.current ?? null;
     const screenTrack = screenStreamRef.current?.getVideoTracks()[0] ?? null;
 
     if (audioTrack && !senders.audio) {
-      senders.audio = pc.addTrack(audioTrack, localStreamRef.current!);
+      senders.audio = pc.addTrack(audioTrack, mixer!.outputStream);
     }
 
     if (cameraTrack && cameraTrack.enabled && !senders.video) {
@@ -452,7 +453,7 @@ export function useVoice(username: string) {
       if (micTrack) {
         mixer.addTrack("mic", micTrack);
       }
-      const mixedStream = mixer.getMixedStream();
+      const mixedStream = mixer.outputStream;
       stream.getVideoTracks().forEach((vt) => mixedStream.addTrack(vt));
       audioMixerRef.current = mixer;
       localStreamRef.current = mixedStream;
@@ -465,6 +466,20 @@ export function useVoice(username: string) {
           cameraVideoTrackRef.current = track;
         });
       }
+
+      // One-time redirect: re-point every existing peer's audio sender to the
+      // mixer's stable output track so that subsequent mixer changes (addTrack /
+      // removeTrack) flow through without calling replaceTrack again.
+      const mixerAudioTrack = mixer.outputStream.getAudioTracks()[0];
+      if (mixerAudioTrack) {
+        peersRef.current.forEach((pc) => {
+          const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
+          if (audioSender && audioSender.track !== mixerAudioTrack) {
+            audioSender.replaceTrack(mixerAudioTrack).catch(() => {});
+          }
+        });
+      }
+
       sendWs({ type: "voice_join" });
       setInVoice(true);
       if (micError !== "camera-denied") setMicError(null);
