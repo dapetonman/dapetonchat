@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { onWsMessage, sendWs } from "@/lib/ws-bus";
+import { AudioMixer } from "@/lib/audio-mixer";
 
 const STUN_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -109,6 +110,7 @@ export function useVoice(username: string) {
   const reconnectTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const makingOfferRef = useRef<Map<string, boolean>>(new Map());
   const syncPeerTracksRef = useRef<((remoteUser: string) => void) | null>(null);
+  const audioMixerRef = useRef<AudioMixer | null>(null);
   const desktopAudioEnabledRef = useRef(false);
   const screenQualityRef = useRef("720p");
 
@@ -164,17 +166,6 @@ export function useVoice(username: string) {
       })
       .catch(() => {});
   }, [username]);
-
-  const restoreMicAudio = useCallback(() => {
-    const micTrack = localStreamRef.current?.getAudioTracks()[0];
-    if (!micTrack) return;
-    peersRef.current.forEach((pc) => {
-      const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
-      if (audioSender && audioSender.track !== micTrack) {
-        audioSender.replaceTrack(micTrack).catch(() => {});
-      }
-    });
-  }, []);
 
   const cleanupPeer = useCallback(
     (remoteUser: string) => {
@@ -456,8 +447,16 @@ export function useVoice(username: string) {
         }
       }
 
-      localStreamRef.current = stream;
-      setLocalStream(stream);
+      const mixer = new AudioMixer();
+      const micTrack = stream.getAudioTracks()[0];
+      if (micTrack) {
+        mixer.addTrack("mic", micTrack);
+      }
+      const mixedStream = mixer.getMixedStream();
+      stream.getVideoTracks().forEach((vt) => mixedStream.addTrack(vt));
+      audioMixerRef.current = mixer;
+      localStreamRef.current = mixedStream;
+      setLocalStream(mixedStream);
       setCameraEnabled(cameraActuallyEnabled);
       if (cameraActuallyEnabled) {
         stream.getVideoTracks().forEach((track) => {
@@ -504,6 +503,8 @@ export function useVoice(username: string) {
     peersRef.current.forEach((_, remoteUser) => cleanupPeer(remoteUser));
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    audioMixerRef.current?.close();
+    audioMixerRef.current = null;
     localStreamRef.current = null;
     screenStreamRef.current = null;
     cameraTrackRef.current = null;
@@ -597,50 +598,42 @@ export function useVoice(username: string) {
         videoTracks.forEach((t) => localStreamRef.current?.removeTrack(t));
         screenStreamRef.current?.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
+        audioMixerRef.current?.removeTrack("desktop");
         setScreenSharing(false);
         setDesktopAudioEnabled(false);
         desktopAudioEnabledRef.current = false;
-        restoreMicAudio();
         peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
         setLocalStream(localStreamRef.current);
       };
 
       if (desktopAudioTrack) {
         desktopAudioTrack.contentHint = "music";
+        audioMixerRef.current?.addTrack("desktop", desktopAudioTrack);
       }
 
       peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-
-      if (desktopAudioTrack) {
-        peersRef.current.forEach((pc) => {
-          const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
-          if (audioSender) {
-            audioSender.replaceTrack(desktopAudioTrack).catch(() => {});
-          }
-        });
-      }
 
       localStreamRef.current!.addTrack(screenTrack);
       setLocalStream(localStreamRef.current);
     } catch {
     }
-  }, [cameraEnabled, inVoice, syncPeerTracks, restoreMicAudio]);
+  }, [cameraEnabled, inVoice, syncPeerTracks]);
 
   const stopScreenShare = useCallback(() => {
     const videoTracks = localStreamRef.current?.getVideoTracks() ?? [];
     videoTracks.forEach((t) => localStreamRef.current?.removeTrack(t));
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     screenStreamRef.current = null;
+    audioMixerRef.current?.removeTrack("desktop");
     setScreenSharing(false);
     setDesktopAudioEnabled(false);
     desktopAudioEnabledRef.current = false;
-    restoreMicAudio();
     if (cameraTrackRef.current) {
       localStreamRef.current?.addTrack(cameraTrackRef.current);
     }
     setLocalStream(localStreamRef.current);
     peersRef.current.forEach((_, remoteUser) => syncPeerTracks(remoteUser));
-  }, [syncPeerTracks, restoreMicAudio]);
+  }, [syncPeerTracks]);
 
   const setScreenQuality = useCallback(async (quality: string) => {
     screenQualityRef.current = quality;
@@ -661,17 +654,11 @@ export function useVoice(username: string) {
     setDesktopAudioEnabled(newState);
 
     const desktopAudioTrack = screenStreamRef.current?.getAudioTracks()[0];
-    const micTrack = localStreamRef.current?.getAudioTracks()[0];
-
-    peersRef.current.forEach((pc) => {
-      const audioSender = pc.getSenders().find((s) => s.track?.kind === "audio");
-      if (!audioSender) return;
-      if (newState && desktopAudioTrack) {
-        audioSender.replaceTrack(desktopAudioTrack).catch(() => {});
-      } else if (!newState && micTrack) {
-        audioSender.replaceTrack(micTrack).catch(() => {});
-      }
-    });
+    if (newState && desktopAudioTrack) {
+      audioMixerRef.current?.addTrack("desktop", desktopAudioTrack);
+    } else if (!newState) {
+      audioMixerRef.current?.removeTrack("desktop");
+    }
   }, []);
 
   const renegotiate = useCallback(() => {
